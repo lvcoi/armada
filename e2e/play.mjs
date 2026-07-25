@@ -1,11 +1,11 @@
 // Plays a real 3-player game in 3 browsers and checks the rules through the UI.
 // Needs Playwright on the machine:  node e2e/play.mjs
-import pw from '/opt/node22/lib/node_modules/playwright/index.js';
+import pw from 'playwright';
 import { spawn } from 'node:child_process';
 const { chromium } = pw;
 
 const PORT = 8099;
-const URL = `http://localhost:${PORT}`;
+const SERVER_URL = `http://localhost:${PORT}`;
 
 // Own the server lifecycle here so every run starts from an empty room.
 const server = spawn('node', ['server/index.js'], {
@@ -17,7 +17,7 @@ process.on('exit', () => server.kill());
 
 for (let i = 0; i < 40; i++) {
   try {
-    const r = await fetch(URL);
+    const r = await fetch(SERVER_URL);
     if (r.ok) break;
   } catch { /* not up yet */ }
   await new Promise((r) => setTimeout(r, 150));
@@ -44,7 +44,7 @@ for (const name of NAMES) {
   const page = await ctx.newPage();
   page.on('pageerror', (e) => fails.push(`JS error (${name}): ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') fails.push(`console error (${name}): ${m.text()}`); });
-  await page.goto(URL);
+  await page.goto(SERVER_URL);
   await page.fill('#nm', name);
   await page.click('[data-act="join"]');
   pages.push({ name, page });
