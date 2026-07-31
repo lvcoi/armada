@@ -51,6 +51,9 @@ export function dispatch(room, playerId, msg) {
         nonce: typeof msg.nonce === 'string' ? msg.nonce : null,
       });
 
+    case MSG.PREMOVE_SET:
+      return room.setPremoves(playerId, msg.premoves);
+
     default:
       throw new GameError(ERR.BAD_MESSAGE, `Unknown message: ${msg.t}`);
   }

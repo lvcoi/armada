@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node server/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "sprites": "node tools/sprites/build.js"
   },
   "dependencies": {
     "qrcode": "^1.5.4",

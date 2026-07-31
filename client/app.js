@@ -3,11 +3,13 @@
 
 import {
   MSG, PHASE, FLEET, TIMER_STOPS, timerLabel, MIN_PLAYERS,
+  MAX_PREMOVES, gridFor,
 } from '/shared/constants.js';
 import { label, shipCells } from '/shared/coords.js';
 import { canPlace } from '/shared/placement.js';
 import { Net, savedToken, savedName, forgetSession } from '/net.js';
-import { boardHTML } from '/board.js';
+import { boardHTML, shipChipHTML } from '/board.js';
+import * as fx from '/fx.js';
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -20,6 +22,10 @@ const ui = {
   target: null,     // armed shot { targetId, cell }
   selShip: null,    // ship type being placed
   anchor: null,     // chosen anchor awaiting a direction
+  premoves: [],     // local working copy of the queue; server echo is authoritative
+  dragging: false,  // a swipe-to-queue gesture is in flight
+  plop: false,      // one-shot: hulls play their arrival pop on the next render
+  swapDir: null,    // one-shot: board slides in from this side after a tab change
   serverGone: false,
 };
 
@@ -33,6 +39,7 @@ const me = () => ui.state?.players.find((p) => p.id === ui.you?.id) ?? null;
 const others = () => ui.state?.players.filter((p) => p.id !== ui.you?.id) ?? [];
 const isHost = () => ui.state && ui.you && ui.state.hostId === ui.you.id;
 const isMyTurn = () => ui.state?.turn?.playerId === ui.you?.id;
+const grid = () => ui.state?.grid ?? 15;
 
 function toast(text) {
   toastEl.textContent = text;
@@ -51,10 +58,12 @@ const net = new Net({
   onOpen() {
     ui.connected = true;
     ui.serverGone = false;
+    fx.signalLost(false);
     schedule();
   },
   onClose() {
     ui.connected = false;
+    fx.signalLost(true);
     schedule();
   },
   onMessage(msg) {
@@ -67,10 +76,24 @@ const net = new Net({
         break;
       case MSG.FIRE_RESULT:
         if (msg.result === 'hit' || msg.result === 'sunk') buzz(msg.targetId === ui.you?.id ? 120 : 40);
+        fxShot(msg);
         break;
-      case MSG.TURN:
-        if (msg.playerId === ui.you?.id) buzz([40, 60, 40]);
+      case MSG.TURN: {
+        if (msg.playerId === ui.you?.id) {
+          buzz([40, 60, 40]);
+          fx.banner('YOU HAVE THE CONN', null, true);
+        } else {
+          const p = ui.state?.players.find((x) => x.id === msg.playerId);
+          if (p) fx.banner(`${p.name.toUpperCase()} HAS THE CONN`, p.color, false);
+        }
         break;
+      }
+      case MSG.ELIMINATED: {
+        const p = ui.state?.players.find((x) => x.id === msg.playerId);
+        fx.stamp(p?.id === ui.you?.id ? 'YOUR FLEET IS DESTROYED' : `${(p?.name ?? '').toUpperCase()} — FLEET DESTROYED`);
+        if (p?.id === ui.you?.id) buzz(200);
+        break;
+      }
       case MSG.ERROR:
         handleError(msg);
         break;
@@ -80,6 +103,32 @@ const net = new Net({
     schedule();
   },
 });
+
+/** Rect of a cell on the board currently on screen for that defender, if visible. */
+function cellRect(targetId, cell) {
+  return app
+    .querySelector(`.board-wrap[data-board="${targetId}"] [data-cell="${cell}"]`)
+    ?.getBoundingClientRect() ?? null;
+}
+
+/** Route one shot's result to the FX layer. */
+function fxShot(msg) {
+  const mine = msg.targetId === ui.you?.id;
+  if (mine && (msg.result === 'hit' || msg.result === 'sunk')) fx.struck();
+
+  const rect = cellRect(msg.targetId, msg.cell);
+  if (!rect) return;
+
+  const land = () => {
+    if (msg.result === 'miss') fx.splash(rect);
+    else fx.burst(rect);
+    if (msg.result === 'sunk') fx.smoke(rect);
+  };
+
+  if (mine) fx.shell(rect, land);
+  else if (msg.premove && msg.attackerId === ui.you?.id) fx.tracer(rect, land);
+  else land();
+}
 
 function applyState(msg) {
   const prev = ui.state;
@@ -100,6 +149,21 @@ function applyState(msg) {
   if (!ui.tab || !msg.players.some((p) => p.id === ui.tab)) {
     ui.tab = others().find((p) => !p.eliminated)?.id ?? ui.you?.id ?? null;
   }
+
+  // The server's copy of the queue wins — except mid-swipe, when clobbering the local
+  // list would drop the cells still under the player's finger.
+  if (!ui.dragging) {
+    ui.premoves = (me()?.premoves ?? []).map((m) => ({ ...m }));
+  }
+
+  if (prev && prev.phase !== PHASE.OVER && msg.phase === PHASE.OVER) {
+    const winner = msg.players.find((p) => p.id === msg.winnerId);
+    fx.victory(winner?.color);
+  }
+}
+
+function sendPremoves() {
+  net.send({ t: MSG.PREMOVE_SET, premoves: ui.premoves });
 }
 
 function handleError(msg) {
@@ -134,7 +198,7 @@ function clockHTML(ms) {
   if (ms == null) return '<div class="timer none">No limit</div>';
   const s = Math.ceil(ms / 1000);
   const txt = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-  return `<div class="timer${s <= 15 ? ' warn' : ''}">${txt}</div>`;
+  return `<div class="timer${s <= 5 ? ' warn crit' : s <= 15 ? ' warn' : ''}">${txt}</div>`;
 }
 
 function topbar(title, sub, deadlineAt) {
@@ -145,25 +209,26 @@ function topbar(title, sub, deadlineAt) {
 }
 
 function playerRow(p) {
-  return `<div class="player${p.connected ? '' : ' off'}">
-    <span class="dot" style="background:${p.color}"></span>
+  const tags = [
+    p.id === ui.state.hostId ? 'HOST' : '',
+    p.connected ? '' : 'NO SIGNAL',
+    p.eliminated ? 'SUNK' : '',
+    ui.state.phase === PHASE.PLACEMENT && p.ready ? 'READY' : '',
+  ].filter(Boolean).map((t) => `[${t}]`).join(' ');
+  return `<div class="player${p.connected ? '' : ' off'}" style="--pc:${p.color}">
+    <span class="avatar">${esc(p.name.slice(0, 1).toUpperCase())}</span>
     <span class="nm">${esc(p.name)}</span>
-    <span class="badge">${[
-      p.id === ui.state.hostId ? 'host' : '',
-      p.connected ? '' : 'offline',
-      p.eliminated ? 'out' : '',
-      ui.state.phase === PHASE.PLACEMENT && p.ready ? 'ready' : '',
-    ].filter(Boolean).join(' · ')}</span>
+    <span class="badge">${tags}</span>
   </div>`;
 }
 
 // -------------------------------------------------- offline / join
 
 function offlineScreen() {
-  return `${topbar('Armada', ui.serverGone ? 'Disconnected' : 'Connecting…')}
+  return `${topbar('Armada', ui.serverGone ? 'Signal lost' : 'Hailing…')}
     <main>
       <div class="card center">
-        <p class="big">${ui.serverGone ? 'Lost the host' : 'Connecting…'}</p>
+        <p class="big">${ui.serverGone ? 'SIGNAL LOST' : 'HAILING'}<span class="cursor">▍</span></p>
         <p class="dim">Make sure you are on the same wifi as the person hosting the game.
         This will reconnect on its own.</p>
       </div>
@@ -173,9 +238,14 @@ function offlineScreen() {
 function joinScreen() {
   return `${topbar('Armada', 'Battleship on the home wifi')}
     <main>
+      <div class="join-hero">
+        <div class="rose"><span class="ping"></span></div>
+        <h1 class="hero-title">Armada</h1>
+        <p class="hero-sub">NAVAL COMBAT · HOME WIFI</p>
+      </div>
       <div class="card">
         <div class="field">
-          <label for="nm">What should we call you?</label>
+          <label for="nm">Enter callsign</label>
           <input id="nm" type="text" maxlength="16" autocomplete="off"
                  autocapitalize="words" placeholder="Your name" value="${esc(savedName())}">
         </div>
@@ -199,11 +269,15 @@ function limitSlider(id, value, name) {
 function lobbyScreen() {
   const s = ui.state;
   const enough = s.players.length >= MIN_PLAYERS;
-  return `${topbar('Lobby', `${s.players.length} of 4 aboard`)}
+  const g = gridFor(s.players.length);
+  const empty = Array.from({ length: 4 - s.players.length }, () =>
+    '<div class="player ghost-seat"><span class="avatar">·</span><span class="seat dim">Awaiting challenger…</span></div>').join('');
+  return `${topbar('Lobby', `Crew manifest — ${s.players.length}/4 aboard`)}
     <main>
       <div class="card">
         <h2>Players</h2>
-        <div class="players">${s.players.map(playerRow).join('')}</div>
+        <div class="players">${s.players.map(playerRow).join('')}${empty}</div>
+        ${enough ? `<p class="dim boardsize">Battle plot for ${s.players.length} captains: <b>${g}×${g}</b></p>` : ''}
       </div>
       <div class="card">
         <h2>Settings${isHost() ? '' : ' (host only)'}</h2>
@@ -248,49 +322,51 @@ function placementScreen() {
 
   let ghost = null;
   if (def && ui.anchor != null) {
-    const dirs = ['h', 'v'].filter((d) => canPlace(ui.anchor, d, def.len, s.terrainId, occupied));
-    const cells = shipCells(ui.anchor, dirs[0] ?? 'h', def.len);
-    ghost = { cells: cells ?? [ui.anchor], bad: dirs.length === 0 };
+    const dirs = ['h', 'v'].filter((d) => canPlace(ui.anchor, d, def.len, s.terrainId, occupied, s.grid));
+    const cells = shipCells(ui.anchor, dirs[0] ?? 'h', def.len, s.grid);
+    ghost = { cells: cells ?? [ui.anchor], bad: dirs.length === 0, type: def.type };
   }
 
   const chips = FLEET.map((f) => {
     const placed = my.ships.find((x) => x.type === f.type);
     return `<button class="chip" data-ship="${f.type}"
       aria-pressed="${ui.selShip === f.type}">
-      ${f.name} <span class="len">${'▪'.repeat(f.len)}</span>
-      ${placed ? '' : '<span class="len">?</span>'}
+      ${shipChipHTML(f.type)}
+      <span class="chip-nm">${f.name}</span>
+      <span class="len">${placed ? '▸' : '?'}</span>
     </button>`;
   }).join('');
 
   const sheet = my.ready
-    ? `<div class="sheet"><p class="center dim">Fleet locked in. Waiting for everyone else…</p></div>`
+    ? `<div class="sheet"><p class="center dim">Fleet locked — awaiting the other captains<span class="cursor">▍</span></p></div>`
     : ui.anchor != null && def
       ? `<div class="sheet">
-           <div class="label">${def.name} at <b>${label(ui.anchor)}</b></div>
+           <div class="label">${def.name} at <b class="coord">${label(ui.anchor, s.grid)}</b></div>
            <div class="row">
              <button class="btn" data-act="place" data-dir="h"
-               ${canPlace(ui.anchor, 'h', def.len, s.terrainId, occupied) ? '' : 'disabled'}>→ Across</button>
+               ${canPlace(ui.anchor, 'h', def.len, s.terrainId, occupied, s.grid) ? '' : 'disabled'}>→ Across</button>
              <button class="btn" data-act="place" data-dir="v"
-               ${canPlace(ui.anchor, 'v', def.len, s.terrainId, occupied) ? '' : 'disabled'}>↓ Down</button>
+               ${canPlace(ui.anchor, 'v', def.len, s.terrainId, occupied, s.grid) ? '' : 'disabled'}>↓ Down</button>
            </div>
            <button class="btn ghost" data-act="cancel-place">Cancel</button>
          </div>`
       : `<div class="sheet">
            <div class="row">
-             <button class="btn" data-act="random">Shuffle</button>
-             <button class="btn primary" data-act="ready">I'm ready</button>
+             <button class="btn" data-act="random">Scramble</button>
+             <button class="btn primary" data-act="ready">Lock fleet</button>
            </div>
          </div>`;
 
-  return `${topbar('Place your fleet',
+  const plop = ui.plop;
+  return `${topbar('Deploy the fleet',
       ui.selShip ? `Tap a square for your ${def.name.toLowerCase()}` : 'Tap a ship, then a square',
       s.placementDeadlineAt)}
     <main>
       <div class="chips">${chips}</div>
-      <div class="board-wrap" data-board="own">
+      <div class="board-wrap" data-board="own" style="--pc:${my.color}">
         ${boardHTML({
-          land: s.land, incoming: my.incoming, ships: my.ships,
-          ghost, disabled: my.ready,
+          grid: s.grid, land: s.land, incoming: my.incoming, ships: my.ships,
+          ghost, plop, name: 'Your waters', disabled: my.ready,
         })}
       </div>
       <div class="card">
@@ -305,15 +381,16 @@ function placementScreen() {
 
 function tabsHTML() {
   const my = me();
+  const turnId = ui.state.turn?.playerId;
   const tabs = [my, ...others()].map((p) => {
     const isMine = p.id === ui.you.id;
     const pips = Array.from({ length: FLEET.length }, (_, i) =>
       `<span class="pip${i < p.shipsRemaining ? ' on' : ''}"></span>`).join('');
-    return `<button class="tab${p.eliminated ? ' out' : ''}" data-tab="${p.id}"
-      aria-selected="${ui.tab === p.id}">
-      <span class="swatch" style="background:${p.color}"></span>
+    return `<button class="tab${p.eliminated ? ' out' : ''}${p.id === turnId ? ' turn' : ''}"
+      data-tab="${p.id}" style="--pc:${p.color}" aria-selected="${ui.tab === p.id}">
       <span class="nm">${isMine ? 'You' : esc(p.name)}</span>
       <span class="pips">${pips}</span>
+      <span class="swatch"></span>
     </button>`;
   }).join('');
   return `<div class="tabs">${tabs}</div>`;
@@ -326,10 +403,16 @@ function feedHTML() {
     const verb = r.result === 'sunk'
       ? `<span class="sunk">SANK the ${r.shipType}!</span>`
       : r.result === 'hit' ? '<span class="hit">HIT</span>' : 'missed';
-    return `<div class="line"><b>${esc(name(r.attackerId))}</b> → <b>${esc(name(r.targetId))}</b>
-      ${label(r.cell)} ${verb}${r.auto ? ' <span class="auto">(auto)</span>' : ''}</div>`;
+    const tag = r.premove ? ' <span class="auto">[AUTO]</span>'
+      : r.auto ? ' <span class="auto">[TIMEOUT]</span>' : '';
+    const who = (id) => {
+      const p = s.players.find((x) => x.id === id);
+      return `<b style="--pc:${p?.color ?? 'inherit'}">${esc(p?.name ?? '?')}</b>`;
+    };
+    return `<div class="line">${who(r.attackerId)} → ${who(r.targetId)}
+      <span class="coord">${label(r.cell, s.grid)}</span> ${verb}${tag}</div>`;
   }).join('');
-  return `<div class="card"><h2>What just happened</h2><div class="feed">${lines || '<div class="line">No shots yet.</div>'}</div></div>`;
+  return `<div class="card"><h2>Combat log</h2><div class="feed">${lines || '<div class="line">No shots yet.</div>'}</div></div>`;
 }
 
 function battleScreen() {
@@ -340,39 +423,78 @@ function battleScreen() {
   const turnName = s.players.find((p) => p.id === s.turn.playerId)?.name ?? '';
 
   const canFire = isMyTurn() && !my.eliminated && !viewingSelf && !viewing.eliminated;
+  // Off-turn, a live opponent's board becomes the premove queue surface.
+  const canQueue = !isMyTurn() && !my.eliminated && !viewingSelf && !viewing.eliminated;
+
+  // 1-based firing order for queue badges on the board being viewed.
+  const pmMap = new Map();
+  ui.premoves.forEach((m, i) => {
+    if (m.targetId === viewing.id) pmMap.set(m.cell, i + 1);
+  });
+
+  const chips = ui.premoves.map((m, i) =>
+    `<button class="qchip" data-act="unqueue" data-idx="${i}">
+       <span class="coord">${label(m.cell, s.grid)}</span><span class="qn">${i + 1}</span>
+     </button>`).join('');
+  const queueNote = ui.premoves.length
+    ? `<div class="queue-note">
+         <span class="qcount">QUEUE ${ui.premoves.length}/${MAX_PREMOVES}</span>
+         <span class="qchips">${chips}</span>
+         <button class="btn ghost slim" data-act="clear-queue">Clear</button>
+       </div>
+       <p class="center dim qhint">They fire on your turns until one hits. Tap a chip to drop it.</p>`
+    : canQueue
+      ? '<p class="center dim qhint">QUEUE EMPTY — tap or swipe their waters to plot shots.</p>'
+      : '';
 
   const sheet = my.eliminated
     ? `<div class="sheet"><p class="center dim">You're out — enjoy the show.</p></div>`
     : !isMyTurn()
-      ? `<div class="sheet"><p class="center dim">Waiting for <b>${esc(turnName)}</b>…</p></div>`
+      ? `<div class="sheet">
+           ${queueNote}
+           <p class="center dim">Waiting for <b>${esc(turnName)}</b><span class="cursor">▍</span></p>
+         </div>`
       : ui.target
         ? `<div class="sheet">
-             <div class="label">Fire at <b>${esc(viewing.name)}</b> · <b>${label(ui.target.cell)}</b></div>
+             <div class="label">Fire at <b>${esc(viewing.name)}</b> · <b class="coord">${label(ui.target.cell, s.grid)}</b></div>
              <div class="nudge">
-               <button data-nudge="-15">↑</button>
-               <button data-nudge="-1">←</button>
-               <button data-nudge="1">→</button>
-               <button data-nudge="15">↓</button>
+               <button data-nudge="up">↑</button>
+               <button data-nudge="left">←</button>
+               <button data-nudge="right">→</button>
+               <button data-nudge="down">↓</button>
              </div>
-             <button class="btn fire" data-act="fire">FIRE</button>
+             <button class="btn fire" data-act="fire">FIRE · ${label(ui.target.cell, s.grid)}</button>
              <button class="btn ghost" data-act="cancel-fire">Cancel</button>
            </div>`
-        : `<div class="sheet"><p class="center dim">
+        : `<div class="sheet">
+             ${queueNote}
+             <p class="center dim">
              ${viewingSelf ? 'Pick an opponent above to attack.' : `Tap a square on ${esc(viewing.name)}'s waters.`}
            </p></div>`;
+
+  // Only the newest shot on the viewed board gets an entry animation — innerHTML
+  // re-renders would otherwise replay every explosion in the history.
+  const last = s.log.at(-1);
+  const lastShot = last && last.targetId === viewing.id ? last.cell : null;
+  const swap = ui.swapDir ? ` swap-${ui.swapDir}` : '';
 
   return `${topbar(isMyTurn() ? 'Your turn' : `${esc(turnName)}'s turn`,
       viewingSelf ? 'Your waters' : `${esc(viewing.name)}'s waters`,
       s.turn.deadlineAt)}
     <main>
       ${tabsHTML()}
-      <div class="board-wrap" data-board="${viewing.id}">
+      <div class="board-wrap${canQueue ? ' queueing' : ''}${swap}" data-board="${viewing.id}"
+           style="--pc:${viewing.color}">
         ${boardHTML({
+          grid: s.grid,
           land: s.land,
           incoming: viewing.incoming,
           ships: viewing.ships.filter((sh) => sh.cells),
           selected: ui.target?.targetId === viewing.id ? ui.target.cell : null,
-          disabled: !canFire && !viewingSelf,
+          premoves: pmMap.size ? pmMap : null,
+          lastShot,
+          name: viewingSelf ? 'Your waters' : `${viewing.name}'s waters`,
+          disabled: !canFire && !viewingSelf && !canQueue,
         })}
       </div>
       ${feedHTML()}
@@ -388,9 +510,9 @@ function overScreen() {
   const won = winner?.id === ui.you?.id;
   return `${topbar('Game over', '')}
     <main>
-      <div class="card center">
-        <p class="big">${winner ? `${esc(winner.name)} wins!` : 'Nobody left standing.'}</p>
-        <p class="dim">${won ? 'Your fleet was the last one afloat.' : ''}</p>
+      <div class="card center verdict" ${winner ? `style="--pc:${winner.color}"` : ''}>
+        <p class="hero-title">${winner ? `${esc(winner.name)} wins` : 'All fleets lost'}</p>
+        <p class="dim">${won ? 'LAST FLEET AFLOAT' : winner ? `${esc(winner.name).toUpperCase()} HOLDS THE OCEAN` : ''}</p>
       </div>
       ${feedHTML()}
       <div class="card">
@@ -398,8 +520,8 @@ function overScreen() {
         <div class="players">${s.players.map(playerRow).join('')}</div>
       </div>
       ${isHost()
-        ? '<button class="btn primary" data-act="again">Play again</button>'
-        : '<p class="dim center">Waiting for the host to start another game…</p>'}
+        ? '<button class="btn primary" data-act="again">Run it back</button>'
+        : '<p class="dim center">Awaiting the host<span class="cursor">▍</span></p>'}
     </main>`;
 }
 
@@ -414,17 +536,33 @@ const RENDERERS = {
   over: overScreen,
 };
 
+let lastScreen = '';
 function render() {
   const sc = screen();
-  const key = JSON.stringify([sc, ui.state?.seq, ui.tab, ui.target, ui.selShip, ui.anchor, ui.connected]);
+  const key = JSON.stringify([sc, ui.state?.seq, ui.tab, ui.target, ui.selShip, ui.anchor,
+    ui.connected, ui.premoves]);
   if (key === lastKey) { tickClock(); return; }
   lastKey = key;
+
+  // Staggered entrance plays only when the SCREEN changes, never on state pushes.
+  if (sc !== lastScreen) app.dataset.fresh = '1';
+  else delete app.dataset.fresh;
+  lastScreen = sc;
 
   // Keep whatever the player was typing when a state push lands.
   const typed = app.querySelector('#nm')?.value;
   app.innerHTML = RENDERERS[sc]();
   const input = app.querySelector('#nm');
   if (input && typed != null) input.value = typed;
+
+  // innerHTML throws focus away; keyboard players get their square back.
+  if (keyboardUser && focusedCell != null) {
+    app.querySelector(`[data-cell="${focusedCell}"]`)?.focus({ preventScroll: true });
+  }
+
+  // One-shot animation flags are consumed by the render that painted them.
+  ui.plop = false;
+  ui.swapDir = null;
 }
 
 /** Update just the clock between renders so the countdown is smooth. */
@@ -449,10 +587,13 @@ setInterval(tickClock, 250);
 // ------------------------------------------------------------------ events
 
 app.addEventListener('click', (ev) => {
+  if (swallowClick) return;
   const el = ev.target.closest('[data-act],[data-cell],[data-tab],[data-ship],[data-nudge]');
   if (!el) return;
 
   if (el.dataset.tab) {
+    const order = ui.state?.players.map((p) => p.id) ?? [];
+    ui.swapDir = order.indexOf(el.dataset.tab) < order.indexOf(ui.tab) ? 'l' : 'r';
     ui.tab = el.dataset.tab;
     ui.target = null;
     return schedule();
@@ -464,12 +605,14 @@ app.addEventListener('click', (ev) => {
   }
   if (el.dataset.nudge) {
     if (!ui.target) return;
-    const next = ui.target.cell + Number(el.dataset.nudge);
+    const g = grid();
+    const delta = { up: -g, down: g, left: -1, right: 1 }[el.dataset.nudge];
+    const next = ui.target.cell + delta;
     // Sideways nudges must not wrap onto the next row.
-    const sameRow = Math.abs(Number(el.dataset.nudge)) === 1
-      ? Math.floor(next / 15) === Math.floor(ui.target.cell / 15)
+    const sameRow = Math.abs(delta) === 1
+      ? Math.floor(next / g) === Math.floor(ui.target.cell / g)
       : true;
-    if (next >= 0 && next < 225 && sameRow) ui.target = { ...ui.target, cell: next };
+    if (next >= 0 && next < g * g && sameRow) ui.target = { ...ui.target, cell: next };
     return schedule();
   }
   if (el.dataset.cell != null) return onCell(Number(el.dataset.cell));
@@ -499,16 +642,119 @@ function onCell(cell) {
 
   if (s.phase === PHASE.PLAYING) {
     const viewing = s.players.find((p) => p.id === ui.tab);
-    if (!isMyTurn()) return toast("It isn't your turn yet");
     if (me().eliminated) return;
     if (!viewing || viewing.id === ui.you.id) return toast('Pick an opponent to attack');
     if (viewing.eliminated) return toast(`${viewing.name} is already out`);
+
+    // Off-turn taps queue premoves instead of being refused.
+    if (!isMyTurn()) return togglePremove(viewing, cell);
+
     if (s.land.includes(cell)) return toast('That square is land');
     if (viewing.incoming[cell] !== 0) return toast("You've already fired there");
     ui.target = { targetId: viewing.id, cell };
     return schedule();
   }
 }
+
+// ------------------------------------------------------------------ premoves
+
+function togglePremove(viewing, cell) {
+  const s = ui.state;
+  const at = ui.premoves.findIndex((m) => m.targetId === viewing.id && m.cell === cell);
+  if (at >= 0) {
+    ui.premoves.splice(at, 1);
+  } else {
+    if (s.land.includes(cell)) return toast('That square is land');
+    if (viewing.incoming[cell] !== 0) return toast('Already fired there');
+    if (ui.premoves.length >= MAX_PREMOVES) return toast(`Queue is full (${MAX_PREMOVES} max)`);
+    ui.premoves.push({ targetId: viewing.id, cell });
+    buzz(15);
+  }
+  sendPremoves();
+  schedule();
+}
+
+/** Swipe across an opponent's board to queue a run of cells in one gesture. */
+function queueFromPoint(x, y) {
+  const el = document.elementFromPoint(x, y)?.closest?.('[data-cell]');
+  if (!el || !el.closest('.board-wrap.queueing')) return;
+  const s = ui.state;
+  const viewing = s?.players.find((p) => p.id === ui.tab);
+  if (!viewing) return;
+  const cell = Number(el.dataset.cell);
+  if (s.land.includes(cell) || viewing.incoming[cell] !== 0) return;
+  if (ui.premoves.some((m) => m.targetId === viewing.id && m.cell === cell)) return;
+  if (ui.premoves.length >= MAX_PREMOVES) return;
+  ui.premoves.push({ targetId: viewing.id, cell });
+  buzz(15);
+  schedule();
+}
+
+let dragStart = null;
+
+app.addEventListener('pointerdown', (ev) => {
+  if (!ev.target.closest?.('.board-wrap.queueing [data-cell]')) return;
+  dragStart = { x: ev.clientX, y: ev.clientY };
+});
+
+app.addEventListener('pointermove', (ev) => {
+  if (!dragStart) return;
+  // A finger has to travel before a tap becomes a swipe — protects the toggle tap.
+  if (!ui.dragging) {
+    const dx = ev.clientX - dragStart.x;
+    const dy = ev.clientY - dragStart.y;
+    if (dx * dx + dy * dy < 12 * 12) return;
+    ui.dragging = true;
+    queueFromPoint(dragStart.x, dragStart.y);
+  }
+  queueFromPoint(ev.clientX, ev.clientY);
+});
+
+let swallowClick = false;
+
+function endDrag() {
+  dragStart = null;
+  if (!ui.dragging) return;
+  ui.dragging = false;
+  // The click that follows a swipe would toggle the last cell straight back off.
+  swallowClick = true;
+  setTimeout(() => { swallowClick = false; }, 0);
+  sendPremoves();
+  schedule();
+}
+app.addEventListener('pointerup', endDrag);
+app.addEventListener('pointercancel', endDrag);
+
+// ------------------------------------------------------------------ keyboard
+
+// The board is one tab stop; arrows walk it. Focus is only restored across renders
+// once someone has actually used the keyboard, so touch players never see focus rings.
+let keyboardUser = false;
+let focusedCell = null;
+
+app.addEventListener('focusin', (ev) => {
+  const cell = ev.target.closest?.('[data-cell]');
+  focusedCell = cell ? cell.dataset.cell : null;
+});
+
+app.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Tab') { keyboardUser = true; return; }
+  const cell = ev.target.closest?.('[data-cell]');
+  if (!cell) return;
+
+  const g = grid();
+  const delta = { ArrowUp: -g, ArrowDown: g, ArrowLeft: -1, ArrowRight: 1 }[ev.key];
+  if (!delta) return;
+
+  ev.preventDefault();
+  keyboardUser = true;
+  const from = Number(cell.dataset.cell);
+  const to = from + delta;
+  if (to < 0 || to >= g * g) return;
+  // Sideways steps must not wrap onto the next row.
+  if (Math.abs(delta) === 1 && Math.floor(to / g) !== Math.floor(from / g)) return;
+  app.querySelector(`[data-cell="${to}"]`)?.focus({ preventScroll: true });
+});
 
 function onAction(act, el) {
   const s = ui.state;
@@ -529,6 +775,7 @@ function onAction(act, el) {
       net.send({ t: MSG.PLACE_RANDOM });
       ui.selShip = null;
       ui.anchor = null;
+      ui.plop = true; // the next render (the shuffle echo) pops the hulls in
       break;
     case 'ready':
       net.send({ t: MSG.PLACE_CONFIRM });
@@ -560,6 +807,18 @@ function onAction(act, el) {
     case 'cancel-fire':
       ui.target = null;
       break;
+    case 'clear-queue':
+      ui.premoves = [];
+      sendPremoves();
+      break;
+    case 'unqueue': {
+      const idx = Number(el.dataset.idx);
+      if (Number.isInteger(idx) && idx >= 0 && idx < ui.premoves.length) {
+        ui.premoves.splice(idx, 1);
+        sendPremoves();
+      }
+      break;
+    }
     default:
       return;
   }

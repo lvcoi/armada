@@ -3,10 +3,11 @@
 import { randomUUID } from 'node:crypto';
 
 import {
-  CELLS, PHASE, MSG, ERR, MAX_PLAYERS, MIN_PLAYERS, PLAYER_COLORS,
+  PHASE, MSG, ERR, MAX_PLAYERS, MIN_PLAYERS, PLAYER_COLORS, gridFor,
   TIMER_STOPS, DEFAULT_TURN_LIMIT_MS, DEFAULT_PLACEMENT_LIMIT_MS, DISCONNECT_GRACE_MS,
+  MAX_PREMOVES, PREMOVE_DELAY_MS,
 } from '../shared/constants.js';
-import { randomTerrainId } from '../shared/terrain.js';
+import { randomTerrainId, isLand } from '../shared/terrain.js';
 import { validateFleet, randomFleet, completeFleet } from '../shared/placement.js';
 import { fireAt, fleetSunk, openCells, rejectFire } from './game.js';
 
@@ -38,6 +39,7 @@ export class Room {
     this.seq = 0;
     this.hostId = null;
     this.terrainId = null;
+    this.grid = null;           // board size; decided at startGame from the head count
     this.winnerId = null;
     this.players = [];
     this.log = [];
@@ -53,6 +55,7 @@ export class Room {
     this.placementDeadlineAt = null;
     this._turnTimer = null;
     this._placementTimer = null;
+    this._premoveTimer = null;
   }
 
   // ---------------------------------------------------------------- helpers
@@ -95,8 +98,10 @@ export class Room {
       ready: false,
       eliminated: false,
       ships: [],
-      shipAt: new Int8Array(CELLS).fill(-1),
-      incoming: new Uint8Array(CELLS),
+      // Boards are sized at startGame, once the head count (and so the grid) is known.
+      shipAt: new Int8Array(0),
+      incoming: new Uint8Array(0),
+      premoves: [],             // [{ targetId, cell }] — fires one per turn until a hit
       lastSeenAt: this.now(),
       lastNonce: null,
     };
@@ -153,11 +158,15 @@ export class Room {
 
     this.phase = PHASE.PLACEMENT;
     this.terrainId = randomTerrainId(this.rng);
+    // Two players fight close-quarters on 10x10; a full table gets the 15x15 ocean.
+    this.grid = gridFor(this.players.length);
 
     // Everyone starts from a legal random layout, so a player who does nothing at all
     // still has a real fleet and the Random button has something to shuffle away from.
     for (const p of this.players) {
-      this.applyFleet(p, randomFleet(this.terrainId, this.rng));
+      p.incoming = new Uint8Array(this.grid * this.grid);
+      p.premoves = [];
+      this.applyFleet(p, randomFleet(this.terrainId, this.grid, this.rng));
       p.ready = false;
     }
 
@@ -176,7 +185,7 @@ export class Room {
       type: s.type, len: s.len, anchor: s.anchor, dir: s.dir,
       cells: s.cells, hits: [], sunk: false,
     }));
-    player.shipAt = new Int8Array(CELLS).fill(-1);
+    player.shipAt = new Int8Array(this.grid * this.grid).fill(-1);
     player.ships.forEach((ship, idx) => {
       ship.cells.forEach((c) => { player.shipAt[c] = idx; });
     });
@@ -192,7 +201,7 @@ export class Room {
 
   setPlacement(playerId, ships) {
     const p = this.requirePlacing(playerId);
-    const check = validateFleet(ships, this.terrainId);
+    const check = validateFleet(ships, this.terrainId, this.grid);
     if (!check.ok) fail(ERR.BAD_PLACEMENT, check.error);
     this.applyFleet(p, check.ships);
     this.touch();
@@ -200,7 +209,7 @@ export class Room {
 
   randomPlacement(playerId) {
     const p = this.requirePlacing(playerId);
-    this.applyFleet(p, randomFleet(this.terrainId, this.rng));
+    this.applyFleet(p, randomFleet(this.terrainId, this.grid, this.rng));
     this.touch();
   }
 
@@ -217,7 +226,7 @@ export class Room {
       if (p.ready) continue;
       // Keep whatever they had placed, fill in the rest, lock them in.
       const partial = p.ships.map(({ type, anchor, dir }) => ({ type, anchor, dir }));
-      this.applyFleet(p, completeFleet(partial, this.terrainId, this.rng));
+      this.applyFleet(p, completeFleet(partial, this.terrainId, this.grid, this.rng));
       p.ready = true;
     }
     this.beginPlaying();
@@ -233,6 +242,7 @@ export class Room {
     this.phase = PHASE.PLAYING;
     this.turn.pos = 0;
     this.armTurnTimer();
+    this.armPremove();
     this.bus.event({ t: MSG.TURN, playerId: this.currentPlayerId(), deadlineAt: this.turn.deadlineAt });
     this.touch();
   }
@@ -274,7 +284,7 @@ export class Room {
       fail(ERR.BAD_TARGET, 'Pick a player who is still in the game');
     }
 
-    const why = rejectFire(target, cell, this.terrainId);
+    const why = rejectFire(target, cell, this.terrainId, this.grid);
     if (why) fail(why, {
       bad_cell: 'That square is off the board',
       cell_is_land: 'That square is land',
@@ -282,10 +292,13 @@ export class Room {
     }[why]);
 
     attacker.lastNonce = nonce ?? null;
+    // A hand-aimed shot supersedes anything queued earlier for this turn.
+    this.clearTimeout(this._premoveTimer);
+    this._premoveTimer = null;
     this.applyFire(attacker, target, cell, false);
   }
 
-  applyFire(attacker, target, cell, auto) {
+  applyFire(attacker, target, cell, auto, premove = false) {
     const outcome = fireAt(target, cell);
 
     const record = {
@@ -296,17 +309,20 @@ export class Room {
       ...(outcome.shipType ? { shipType: outcome.shipType } : {}),
       at: this.now(),
       auto,
+      ...(premove ? { premove: true } : {}),
     };
     this.log.push(record);
     this.bus.event({ t: MSG.FIRE_RESULT, ...record });
 
     if (fleetSunk(target)) {
       target.eliminated = true;
+      target.premoves = [];
       this.bus.event({ t: MSG.ELIMINATED, playerId: target.id });
     }
 
-    if (this.checkGameOver()) return;
+    if (this.checkGameOver()) return outcome;
     this.advanceTurn();
+    return outcome;
   }
 
   checkGameOver() {
@@ -317,6 +333,8 @@ export class Room {
     this.winnerId = alive[0]?.id ?? null;
     this.clearTimeout(this._turnTimer);
     this._turnTimer = null;
+    this.clearTimeout(this._premoveTimer);
+    this._premoveTimer = null;
     this.turn.deadlineAt = null;
     this.bus.event({ t: MSG.OVER, winnerId: this.winnerId });
     this.touch();
@@ -332,6 +350,7 @@ export class Room {
       if (p && !p.eliminated) {
         this.turn.pos = pos;
         this.armTurnTimer();
+        this.armPremove();
         this.bus.event({ t: MSG.TURN, playerId: p.id, deadlineAt: this.turn.deadlineAt });
         this.touch();
         return;
@@ -348,7 +367,7 @@ export class Room {
     // Fire one random legal shot at a random opponent who still has squares left.
     const targets = this.alive()
       .filter((p) => p.id !== attacker.id)
-      .map((p) => ({ player: p, cells: openCells(p, this.terrainId) }))
+      .map((p) => ({ player: p, cells: openCells(p, this.terrainId, this.grid) }))
       .filter((t) => t.cells.length > 0);
 
     if (!targets.length) {
@@ -361,6 +380,75 @@ export class Room {
     this.applyFire(attacker, pick.player, cell, true);
   }
 
+  // ---------------------------------------------------------------- premoves
+
+  /**
+   * Replace this player's queue wholesale. The client always sends the full list,
+   * which makes the message idempotent — a retry after flaky wifi can't double-queue.
+   * Entries are sanitized here; whether a cell is still fireable is checked again at
+   * fire time, because the board keeps changing while shots sit in the queue.
+   */
+  setPremoves(playerId, list) {
+    const p = this.byId(playerId);
+    if (!p) fail(ERR.BAD_MESSAGE, 'Unknown player');
+    if (this.phase !== PHASE.PLACEMENT && this.phase !== PHASE.PLAYING) {
+      fail(ERR.WRONG_PHASE, 'You can only queue shots during a game');
+    }
+    if (!Array.isArray(list)) fail(ERR.BAD_MESSAGE, 'Bad premove list');
+
+    const seen = new Set();
+    const clean = [];
+    for (const entry of list) {
+      if (clean.length >= MAX_PREMOVES) break;
+      const target = this.byId(entry?.targetId);
+      const cell = entry?.cell;
+      if (!target || target.id === playerId || target.eliminated) continue;
+      if (!Number.isInteger(cell) || cell < 0 || cell >= this.grid * this.grid) continue;
+      if (isLand(this.terrainId, cell, this.grid)) continue;
+      const key = `${target.id}:${cell}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      clean.push({ targetId: target.id, cell });
+    }
+    p.premoves = clean;
+    this.touch();
+  }
+
+  /** Called at every turn start: give the room a beat, then fire the head of the queue. */
+  armPremove() {
+    this.clearTimeout(this._premoveTimer);
+    this._premoveTimer = null;
+    if (this.phase !== PHASE.PLAYING) return;
+    const current = this.currentPlayer();
+    if (!current || !current.premoves.length) return;
+    this._premoveTimer = this.setTimeout(() => this.firePremove(current.id), PREMOVE_DELAY_MS);
+  }
+
+  firePremove(playerId) {
+    if (this.phase !== PHASE.PLAYING) return;
+    if (this.currentPlayerId() !== playerId) return;
+    const attacker = this.byId(playerId);
+    if (!attacker || attacker.eliminated) return;
+
+    while (attacker.premoves.length) {
+      const { targetId, cell } = attacker.premoves.shift();
+      const target = this.byId(targetId);
+      // Stale entries — target eliminated, or someone else already shot that cell — are
+      // skipped silently and the next queued shot steps up.
+      if (!target || target.eliminated) continue;
+      if (rejectFire(target, cell, this.terrainId, this.grid)) continue;
+
+      const outcome = this.applyFire(attacker, target, cell, false, true);
+      // The queue exists to rake open water. The moment a shell connects, the rest of
+      // the plan is stale intel — clear it and give the aiming back to the player.
+      if (outcome.result !== 'miss') attacker.premoves = [];
+      this.touch();
+      return;
+    }
+    // Queue drained without a legal shot; the turn continues by hand.
+    this.touch();
+  }
+
   /** "Play again" — back to the lobby with the same people, fresh boards. */
   resetToLobby(playerId) {
     if (playerId !== this.hostId) fail(ERR.NOT_HOST, 'Only the host can start a new game');
@@ -368,11 +456,14 @@ export class Room {
 
     this.clearTimeout(this._turnTimer);
     this.clearTimeout(this._placementTimer);
+    this.clearTimeout(this._premoveTimer);
     this._turnTimer = null;
     this._placementTimer = null;
+    this._premoveTimer = null;
 
     this.phase = PHASE.LOBBY;
     this.terrainId = null;
+    this.grid = null;
     this.winnerId = null;
     this.log = [];
     this.turn = { pos: 0, deadlineAt: null };
@@ -389,8 +480,9 @@ export class Room {
       p.ready = false;
       p.eliminated = false;
       p.ships = [];
-      p.shipAt = new Int8Array(CELLS).fill(-1);
-      p.incoming = new Uint8Array(CELLS);
+      p.shipAt = new Int8Array(0);
+      p.incoming = new Uint8Array(0);
+      p.premoves = [];
       p.lastNonce = null;
     }
 
@@ -400,6 +492,7 @@ export class Room {
   dispose() {
     this.clearTimeout(this._turnTimer);
     this.clearTimeout(this._placementTimer);
+    this.clearTimeout(this._premoveTimer);
   }
 }
 

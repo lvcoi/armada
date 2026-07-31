@@ -2,6 +2,7 @@
 // Needs Playwright on the machine:  node e2e/play.mjs
 import pw from 'playwright';
 import { spawn } from 'node:child_process';
+import { PREMOVE_DELAY_MS } from '../shared/constants.js';
 const { chromium } = pw;
 
 const PORT = 8099;
@@ -67,23 +68,57 @@ if (SHOT_DIR) await ann.page.screenshot({ path: `${SHOT_DIR}/1-lobby.png` });
 await ann.page.click('[data-act="start"]');
 for (const { page } of pages) await page.waitForSelector('[data-act="ready"]');
 
+// 3 players play on a 12x12 board now that size follows the head count.
+const gridSide = await ann.page.$$eval('.cell', (els) => Math.sqrt(els.length));
+check(gridSide === 12, `3-player game gets a 12x12 board (got ${gridSide}x${gridSide})`);
+
 const cellBox = await ann.page.locator('[data-cell="0"]').boundingBox();
 log(`cell size at 360px: ${cellBox.width.toFixed(1)}px`);
-check(cellBox.width >= 20 && cellBox.width <= 24, 'cell ~21-23px at 360px viewport');
+check(cellBox.width >= 24 && cellBox.width <= 34, 'cells comfortably tappable on a 12 board at 360px');
 
-// Manual placement path: pick the carrier, tap a square, place it Across.
+// Manual placement path: pick the carrier, then find an open anchor where Across
+// fits — the starting fleet is random, so a fixed anchor is a coin flip.
 await ann.page.click('[data-ship="carrier"]');
-await ann.page.click('[data-cell="0"]');
-await ann.page.waitForSelector('.sheet .label');
+const openAnchors = await ann.page.$$eval('.cell:not(.ship):not(.land)',
+  (els) => els.map((e) => Number(e.dataset.cell)));
+let anchor = null;
+for (const cand of openAnchors.slice(0, 80)) {
+  await ann.page.click(`[data-cell="${cand}"]`);
+  await ann.page.waitForTimeout(60); // rendering is rAF-scheduled
+  const ok = await ann.page.$eval('[data-act="place"][data-dir="h"]', (el) => !el.disabled)
+    .catch(() => false);
+  if (ok) { anchor = cand; break; }
+}
+check(anchor != null, 'found an anchor where the carrier fits Across');
 const sheetText = await ann.page.textContent('.sheet .label');
-check(/Carrier at A1/.test(sheetText), `placement sheet reads "${sheetText.trim()}"`);
+check(/Carrier at [A-O]\d+/.test(sheetText), `placement sheet reads "${sheetText.trim()}"`);
 if (SHOT_DIR) await ann.page.screenshot({ path: `${SHOT_DIR}/2-placement.png` });
 await ann.page.click('[data-act="place"][data-dir="h"]');
 await ann.page.waitForTimeout(200);
 
 const carrierPlaced = await ann.page.$$eval('.cell.ship', (els) =>
   els.map((e) => Number(e.dataset.cell)));
-check([0, 1, 2, 3, 4].every((c) => carrierPlaced.includes(c)), 'carrier landed on A1-E1');
+const want = Array.from({ length: 5 }, (_, n) => anchor + n);
+check(want.every((c) => carrierPlaced.includes(c)),
+  `carrier landed on cells ${want[0]}-${want[4]}`);
+
+// ---- the sprite sheet has to actually decode, or every ship is an invisible box
+const art = await ann.page.evaluate(async () => {
+  const imgs = [...document.querySelectorAll('.hull img.sprite')];
+  await Promise.all(imgs.map((i) => i.complete ? null : i.decode().catch(() => null)));
+  const land = [...document.querySelectorAll('.cell.land')];
+  return {
+    hulls: imgs.length,
+    broken: imgs.filter((i) => !i.naturalWidth).length,
+    landTiles: land.length,
+    landTextured: land.filter((c) =>
+      getComputedStyle(c).backgroundImage.includes('sprites.png')).length,
+  };
+});
+check(art.hulls === 5, `5 ship sprites on the board (got ${art.hulls})`);
+check(art.broken === 0, `every ship sprite decoded (${art.broken} broken)`);
+check(art.landTiles === 0 || art.landTextured === art.landTiles,
+  `all ${art.landTiles} land cells use an island tile (${art.landTextured} textured)`);
 
 for (const { page } of pages) {
   await page.click('[data-act="random"]');
@@ -169,6 +204,40 @@ check(!!stillMyTurnSomewhere || await ann.page.$('[data-act="again"]'),
   'game is either still running or finished cleanly');
 
 if (SHOT_DIR) await ann.page.screenshot({ path: `${SHOT_DIR}/4-midgame.png` });
+
+// ---- premoves through the real UI: queue off-turn, watch them fire on-turn
+const active = await whoseTurn();
+if (active) {
+  const idle = pages.find((p) => p !== active);
+  await idle.page.click('.tabs .tab:nth-child(2)'); // first opponent's board
+  await idle.page.waitForTimeout(150);
+
+  const open = await idle.page.$$eval(
+    '.cell:not(.land):not(.miss):not(.hit)',
+    (els) => els.map((e) => Number(e.dataset.cell)));
+  await idle.page.click(`[data-cell="${open[3]}"]`);
+  await idle.page.click(`[data-cell="${open[9]}"]`);
+  await idle.page.waitForTimeout(250);
+
+  const queued = await idle.page.$$eval('.cell.queued', (els) => els.map((e) => e.dataset.pm));
+  check(queued.length === 2, `off-turn taps queued ${queued.length} premoves (want 2)`);
+  if (SHOT_DIR) await idle.page.screenshot({ path: `${SHOT_DIR}/5-premove.png` });
+
+  // Cycle turns; when the queue owner's turn arrives, the shot must fire on its own.
+  let autoFired = false;
+  for (let i = 0; i < 6 && !autoFired; i++) {
+    const now = await whoseTurn();
+    if (!now) break;
+    if (now === idle) {
+      await idle.page.waitForTimeout(PREMOVE_DELAY_MS + 700);
+      const left = await idle.page.$$eval('.cell.queued', (els) => els.length);
+      autoFired = left < 2; // one consumed by a miss, or the whole queue cleared by a hit
+    } else {
+      await takeTurn(now, 1);
+    }
+  }
+  check(autoFired, "queued shot fired automatically on the owner's turn");
+}
 
 // ---- reconnection: reload mid-game and confirm the slot is reclaimed
 const beforeName = await ben.page.$$eval('.tab .nm', (e) => e.map((x) => x.textContent.trim()));

@@ -1,0 +1,227 @@
+// Transient battle effects. Everything renders into #fx (fixed, pointer-events:none,
+// OUTSIDE the re-rendered #app) so an innerHTML rebuild can never kill an animation
+// mid-flight. Every effect is transform/opacity-only, self-removing, and skipped (or
+// reduced to a short static state) under prefers-reduced-motion.
+
+const fxEl = document.getElementById('fx');
+const appEl = document.getElementById('app');
+
+const RM = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/** Spawn a positioned div inside #fx that removes itself when done. */
+function node(cls, style = '') {
+  const el = document.createElement('div');
+  el.className = cls;
+  el.style.cssText = style;
+  fxEl.appendChild(el);
+  return el;
+}
+
+const center = (rect) => ({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+
+// ------------------------------------------------------------------ banners
+
+/** "YOU HAVE THE CONN" — full-width phosphor bar; enemy turns get a dim tinted one. */
+export function banner(text, color = null, strong = false) {
+  // Rapid turns must replace the banner, not stack a double exposure.
+  fxEl.querySelectorAll('.fx-banner').forEach((b) => b.remove());
+  const el = node(`fx-banner${strong ? ' strong' : ''}`);
+  el.textContent = text;
+  if (color) el.style.setProperty('--pc', color);
+  if (RM()) {
+    el.style.opacity = '1';
+    setTimeout(() => el.remove(), 900);
+    return;
+  }
+  el.animate(
+    [
+      { opacity: 0, transform: 'translate3d(-24px, -50%, 0)' },
+      { opacity: 1, transform: 'translate3d(0, -50%, 0)', offset: 0.16 },
+      { opacity: 1, transform: 'translate3d(0, -50%, 0)', offset: 0.78 },
+      { opacity: 0, transform: 'translate3d(12px, -50%, 0)' },
+    ],
+    { duration: 1300, easing: 'ease-out' },
+  ).onfinish = () => el.remove();
+}
+
+// ------------------------------------------------------------------ shots
+
+/** Particle burst at a cell — embers for a hit. */
+export function burst(rect) {
+  if (RM()) return;
+  const { x, y } = center(rect);
+  const COLORS = ['#ffd9a0', '#ff5031', '#ffffff', '#ffb547'];
+  for (let i = 0; i < 12; i++) {
+    const p = node('fx-p', `left:${x}px;top:${y}px;background:${COLORS[i % COLORS.length]}`);
+    const a = Math.random() * Math.PI * 2;
+    const v = 24 + Math.random() * 42;
+    p.animate(
+      [
+        { transform: 'translate3d(-50%,-50%,0) scale(1)', opacity: 1 },
+        {
+          transform: `translate3d(calc(-50% + ${Math.cos(a) * v}px), calc(-50% + ${Math.sin(a) * v + 18}px), 0) scale(.2)`,
+          opacity: 0,
+        },
+      ],
+      { duration: 480 + Math.random() * 160, easing: 'cubic-bezier(.2,.7,.3,1)' },
+    ).onfinish = () => p.remove();
+  }
+}
+
+/** Two expanding sonar rings + a little spray — a miss. */
+export function splash(rect) {
+  if (RM()) return;
+  const { x, y } = center(rect);
+  for (let i = 0; i < 2; i++) {
+    const r = node('fx-ring', `left:${x}px;top:${y}px`);
+    r.animate(
+      [
+        { transform: 'translate3d(-50%,-50%,0) scale(.3)', opacity: 0.85 },
+        { transform: 'translate3d(-50%,-50%,0) scale(1.9)', opacity: 0 },
+      ],
+      { duration: 640, delay: i * 120, easing: 'ease-out', fill: 'backwards' },
+    ).onfinish = () => r.remove();
+  }
+  for (let i = 0; i < 4; i++) {
+    const p = node('fx-p', `left:${x}px;top:${y}px;background:#5cc9ec`);
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * 1.2;
+    const v = 14 + Math.random() * 18;
+    p.animate(
+      [
+        { transform: 'translate3d(-50%,-50%,0)', opacity: 0.9 },
+        { transform: `translate3d(${Math.cos(a) * v}px, ${Math.sin(a) * v}px, 0)`, opacity: 0 },
+      ],
+      { duration: 420, easing: 'ease-out' },
+    ).onfinish = () => p.remove();
+  }
+}
+
+/** Incoming shell streaking onto YOUR board, then the payload lands. */
+export function shell(rect, onLand) {
+  if (RM()) { onLand?.(); return; }
+  const { x, y } = center(rect);
+  const s = node('fx-shell', `left:${x}px;top:${y}px`);
+  s.animate(
+    [
+      { transform: 'translate3d(120px, -170px, 0) scale(1.1)', opacity: 0 },
+      { transform: 'translate3d(66px, -94px, 0) scale(1)', opacity: 1, offset: 0.25 },
+      { transform: 'translate3d(-50%, -50%, 0) scale(.8)', opacity: 1 },
+    ],
+    { duration: 420, easing: 'cubic-bezier(.2,.7,.3,1)' },
+  ).onfinish = () => { s.remove(); onLand?.(); };
+}
+
+/** Phosphor tracer from the bottom sheet up to the auto-fired cell. */
+export function tracer(rect, onLand) {
+  if (RM()) { onLand?.(); return; }
+  const { x, y } = center(rect);
+  const fromY = innerHeight - 60;
+  const len = Math.max(0, fromY - y);
+  const line = node('fx-tracer', `left:${x}px;top:${y}px;height:${len}px`);
+  line.animate(
+    [
+      { transform: 'scaleY(0)', opacity: 0.9 },
+      { transform: 'scaleY(1)', opacity: 0.9, offset: 0.7 },
+      { transform: 'scaleY(1)', opacity: 0 },
+    ],
+    { duration: 360, easing: 'ease-in' },
+  ).onfinish = () => { line.remove(); onLand?.(); };
+}
+
+/** Red-alert overlay flash + deck shake when YOUR board takes fire. */
+export function struck() {
+  const flash = node('fx-flash');
+  flash.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 260 }).onfinish = () => flash.remove();
+  if (RM()) return;
+  appEl.classList.remove('shake');
+  void appEl.offsetWidth; // restart the keyframe if two hits land back to back
+  appEl.classList.add('shake');
+  setTimeout(() => appEl.classList.remove('shake'), 420);
+}
+
+/** Kill sequence garnish: rising smoke over the wreck. */
+export function smoke(rect) {
+  if (RM()) return;
+  const { x, y } = center(rect);
+  for (let i = 0; i < 5; i++) {
+    const p = node('fx-smoke', `left:${x + (Math.random() - 0.5) * 22}px;top:${y}px`);
+    p.animate(
+      [
+        { transform: 'translate3d(-50%,-50%,0) scale(.6)', opacity: 0.5 },
+        { transform: `translate3d(${(Math.random() - 0.5) * 20 - 8}px, -44px, 0) scale(1.4)`, opacity: 0 },
+      ],
+      { duration: 1100, delay: i * 140, easing: 'ease-out', fill: 'backwards' },
+    ).onfinish = () => p.remove();
+  }
+}
+
+// ------------------------------------------------------------------ moments
+
+/** "FLEET DESTROYED" stamp when someone is knocked out. */
+export function stamp(text) {
+  const el = node('fx-stamp');
+  el.textContent = text;
+  if (RM()) {
+    el.style.opacity = '1';
+    setTimeout(() => el.remove(), 1200);
+    return;
+  }
+  el.animate(
+    [
+      { opacity: 0, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1.6)' },
+      { opacity: 1, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1)', offset: 0.14 },
+      { opacity: 1, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1)', offset: 0.85 },
+      { opacity: 0, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1)' },
+    ],
+    { duration: 1600, easing: 'cubic-bezier(.34,1.56,.64,1)' },
+  ).onfinish = () => el.remove();
+}
+
+/** Victory barrage: ember flares from the corners plus a confetti rain. */
+export function victory(color = '#39f0c3') {
+  if (RM()) return;
+  const COLORS = [color, '#39f0c3', '#ffffff', '#ffb547', '#5cc9ec'];
+  for (let wave = 0; wave < 3; wave++) {
+    setTimeout(() => {
+      for (let i = 0; i < 16; i++) {
+        const fromLeft = i % 2 === 0;
+        const p = node('fx-p', `left:${fromLeft ? 20 : innerWidth - 20}px;top:${innerHeight - 30}px;background:${COLORS[i % COLORS.length]}`);
+        const vx = (fromLeft ? 1 : -1) * (30 + Math.random() * 140);
+        const vy = -(160 + Math.random() * 240);
+        p.animate(
+          [
+            { transform: 'translate3d(0,0,0)', opacity: 1 },
+            { transform: `translate3d(${vx}px, ${vy}px, 0)`, opacity: 1, offset: 0.6 },
+            { transform: `translate3d(${vx * 1.4}px, ${vy + 130}px, 0)`, opacity: 0 },
+          ],
+          { duration: 1400, easing: 'cubic-bezier(.2,.7,.4,1)' },
+        ).onfinish = () => p.remove();
+      }
+    }, wave * 380);
+  }
+  for (let i = 0; i < 40; i++) {
+    const c = node('fx-confetti', `left:${Math.random() * 100}vw;top:-12px;background:${COLORS[i % COLORS.length]}`);
+    c.animate(
+      [
+        { transform: 'translate3d(0,0,0) rotate(0deg)', opacity: 1 },
+        {
+          transform: `translate3d(${(Math.random() - 0.5) * 90}px, ${innerHeight + 40}px, 0) rotate(${540 + Math.random() * 360}deg)`,
+          opacity: 0.9,
+        },
+      ],
+      { duration: 2000 + Math.random() * 900, delay: Math.random() * 500, easing: 'cubic-bezier(.3,.4,.6,1)', fill: 'backwards' },
+    ).onfinish = () => c.remove();
+  }
+}
+
+/** Connection-lost treatment: desaturate the console, roll scanlines. */
+let scan = null;
+export function signalLost(on) {
+  appEl.classList.toggle('offline', on);
+  if (on && !scan && !RM()) {
+    scan = node('fx-scan');
+  } else if (!on && scan) {
+    scan.remove();
+    scan = null;
+  }
+}

@@ -47,16 +47,44 @@ Use `PORT=3000 npm start` if 8080 is taken.
 
 ## How it plays
 
-Everyone gets their own 15×15 board. All the boards share the same coordinate
-system and the same islands, so "G7" means the same square to everybody.
+Everyone gets their own board. All the boards share the same coordinate system and the
+same islands, so "G7" means the same square to everybody.
+
+**The board grows with the table** — two players fight close quarters, four get room to
+manoeuvre:
+
+| Players | Board |
+|---|---|
+| 2 | 10×10 |
+| 3 | 12×12 |
+| 4 | 15×15 |
+
+The size is fixed when the host starts the game, and the lobby shows you which board
+you're about to get.
 
 1. **Place your fleet.** Tap a ship, tap a square, choose Across or Down. Or hit
-   Shuffle for a random layout. Ships can't sit on land. Press *I'm ready* when done —
+   Scramble for a random layout. Ships can't sit on land. Press *Lock fleet* when done —
    if the setup timer runs out first, whatever you haven't placed gets placed for you.
 2. **Take turns.** On your turn, pick the player you want to attack from the tabs
    along the top, then tap a square on their waters and press FIRE.
 3. **Sink everyone else.** Lose your whole fleet and you're out of the rotation, but
    you stay and watch the rest of the game.
+
+### Queuing shots while you wait
+
+You don't have to sit idle between turns. While it's somebody else's turn, tap — or
+swipe a line across — an opponent's waters to **queue up to 8 shots**. They show up
+numbered in firing order.
+
+One queued shot fires automatically at the start of each of your turns, marked `[AUTO]`
+in the combat log. **The moment one of them hits, the rest of the queue is thrown away**
+and you're back to aiming by hand — a hit is worth thinking about, so the game gives the
+turn back to you.
+
+Tap a queued square again (or its chip in the bottom bar) to drop it, or *Clear* to
+scrap the whole plan. Firing manually on your turn cancels that turn's queued shot but
+keeps the rest of the queue for later. Your queue is private — nobody else can see what
+you have plotted.
 
 ### The one rule that isn't normal Battleship
 
@@ -78,7 +106,8 @@ The host sets both timers in the lobby, anywhere from 10 seconds to 10 minutes, 
 off entirely. Both default to 2 minutes.
 
 - **Turn timer** — run out and a random shot is fired for you at a random opponent,
-  marked *(auto)* in the log, then play moves on.
+  marked `[TIMEOUT]` in the log, then play moves on. Queue some shots and this stops
+  being a wasted turn.
 - **Setup timer** — run out and your unplaced ships are placed for you.
 
 Settings lock once the game starts.
@@ -103,6 +132,7 @@ screen will say so rather than hanging.
 shared/    rules used by BOTH the server and the browser — no build step, no bundler
 server/    HTTP + WebSocket, the single in-memory room, all the authoritative logic
 client/    vanilla ES modules, one render() off a state object
+tools/     the sprite-sheet generator (only run when the art changes)
 ```
 
 `shared/` is plain ES modules with explicit `.js` extensions, imported directly by Node
@@ -113,8 +143,24 @@ The server is authoritative for everything. Ship positions are stripped per-reci
 they're sunk.
 
 ```bash
-npm test        # 22 unit tests: rules, terrain, placement, turn order, redaction, timers
+npm test        # unit tests: rules, terrain, placement, turn order, premoves, redaction, timers
 ```
+
+### Art
+
+Ships and islands are pixel art drawn in code and baked into one sprite sheet:
+
+```bash
+npm run sprites   # rewrites client/sprites.png + client/sprite-map.js
+```
+
+`tools/sprites/` has a dependency-free PNG encoder and a small software canvas, so the
+art is authored in plain JS and the game still ships with no build step — the generated
+sheet is committed. Edit `tools/sprites/ships.js` or `islands.js`, re-run the command,
+and reload the page.
+
+Islands are a 16-tile autotile set indexed by which neighbours are also land, so
+coastlines join up across cells instead of looking like a grid of squares.
 
 There's also a browser test that plays a real 3-player game and checks the mechanic
 through the UI. It needs Playwright available:

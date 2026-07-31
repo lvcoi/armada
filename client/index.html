@@ -12,7 +12,9 @@
 </head>
 <body>
   <div id="app" class="app"></div>
-  <div id="toast" class="toast" hidden></div>
+  <!-- Transient FX live outside #app so innerHTML re-renders never kill an animation. -->
+  <div id="fx" aria-hidden="true"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

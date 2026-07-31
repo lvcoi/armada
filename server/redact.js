@@ -31,6 +31,8 @@ function projectPlayer(player, isSelf) {
         sunk: s.sunk,
         cells: s.cells,
       })),
+      // Your battle plan is yours alone — never projected to anyone else.
+      premoves: player.premoves.map((m) => ({ ...m })),
     };
   }
 
@@ -55,7 +57,8 @@ export function projectState(room, viewerId) {
     hostId: room.hostId,
     settings: { ...room.settings },
     terrainId: room.terrainId,
-    land: room.terrainId ? landCells(room.terrainId) : [],
+    grid: room.grid,
+    land: room.terrainId && room.grid ? landCells(room.terrainId, room.grid) : [],
     you: viewerId,
     players: room.players.map((p) => projectPlayer(p, p.id === viewerId)),
     turn: {

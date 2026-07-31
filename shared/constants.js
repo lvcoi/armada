@@ -1,8 +1,17 @@
 // Shared between the Node server and the browser client.
 // Plain ESM with explicit extensions so both runtimes resolve it natively.
 
-export const GRID = 15;
-export const CELLS = GRID * GRID; // 225
+/**
+ * Board size scales with the head count: two players get the classic close-quarters
+ * 10x10, a full table gets room to maneuver. Decided once, at game start.
+ */
+export const GRID_FOR_PLAYERS = { 2: 10, 3: 12, 4: 15 };
+export const MAX_GRID = 15;
+
+export function gridFor(playerCount) {
+  const n = Math.min(Math.max(playerCount, 2), 4);
+  return GRID_FOR_PLAYERS[n];
+}
 
 /** Ship types, longest first — placement is easiest when big ships go down early. */
 export const FLEET = [
@@ -46,6 +55,14 @@ export const DEFAULT_PLACEMENT_LIMIT_MS = 120_000;
 /** A player offline this long forfeits their turn immediately rather than stalling the table. */
 export const DISCONNECT_GRACE_MS = 90_000;
 
+/**
+ * Premoves: shots queued in advance that fire automatically, one per turn, until one
+ * of them HITS — a hit hands aiming back to the player. The delay gives everyone a
+ * beat to watch the turn change before the queued shell flies.
+ */
+export const MAX_PREMOVES = 8;
+export const PREMOVE_DELAY_MS = 700;
+
 export function timerLabel(ms) {
   if (ms == null) return 'No limit';
   const s = Math.round(ms / 1000);
@@ -55,8 +72,8 @@ export function timerLabel(ms) {
   return rem ? `${m}m ${rem}s` : `${m}m`;
 }
 
-/** Colorblind-separable, and always shown alongside the player's name. */
-export const PLAYER_COLORS = ['#e4572e', '#3d9970', '#4a7fd4', '#c9a227'];
+/** Colorblind-separable, tuned for the dark phosphor UI, always shown with the name. */
+export const PLAYER_COLORS = ['#ff6a3d', '#35d08e', '#5b9dff', '#ffc83d'];
 
 export const MSG = {
   // client -> server
@@ -68,6 +85,7 @@ export const MSG = {
   PLACE_RANDOM: 'place/random',
   PLACE_CONFIRM: 'place/confirm',
   FIRE: 'fire',
+  PREMOVE_SET: 'premove/set',
   PING: 'ping',
   // server -> client
   WELCOME: 'welcome',
