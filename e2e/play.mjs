@@ -24,7 +24,11 @@ for (let i = 0; i < 40; i++) {
   await new Promise((r) => setTimeout(r, 150));
 }
 const SHOT_DIR = process.env.SHOT_DIR || null;
-const NAMES = ['Ann', 'Ben', 'Cal'];
+// The third name is deliberately hostile: names are only length-capped by the server,
+// and they reach the DOM through innerHTML (board aria-labels, tabs, the feed). If any
+// interpolation stops escaping, this player's board stops rendering and the run fails.
+const HOSTILE = '"><img src=x>';
+const NAMES = ['Ann', 'Ben', HOSTILE];
 
 const log = (...a) => console.log('  ', ...a);
 const fails = [];
@@ -128,6 +132,23 @@ for (const { page } of pages) {
 
 for (const { page } of pages) await page.waitForSelector('.tabs', { timeout: 5000 });
 log('all three reached the battle screen');
+
+// ---- a hostile player name must not be able to break anyone else's board
+{
+  const tabs = await ann.page.$$('.tabs .tab');
+  await tabs[tabs.length - 1].click(); // the hostile-named player's waters
+  await ann.page.waitForTimeout(200);
+  const shape = await ann.page.evaluate(() => ({
+    cells: document.querySelectorAll('.cells [data-cell]').length,
+    strayImgs: document.querySelectorAll('.cells img').length,
+    aria: document.querySelector('.cells')?.getAttribute('aria-label') ?? '',
+  }));
+  const side = Math.sqrt(shape.cells);
+  check(Number.isInteger(side) && side === 12,
+    `hostile name still renders a full 12x12 board (got ${shape.cells} cells)`);
+  check(shape.strayImgs === 0, `no markup injected from the name (${shape.strayImgs} stray imgs)`);
+  check(shape.aria.includes('<img'), 'the name is carried as literal text in aria-label');
+}
 if (SHOT_DIR) await ann.page.screenshot({ path: `${SHOT_DIR}/3-battle.png` });
 
 // ---- play turns
@@ -142,6 +163,12 @@ const whoseTurn = async () => {
 async function takeTurn(p, tabIndex, wantCell = null) {
   await p.page.click(`.tabs .tab:nth-child(${tabIndex + 1})`);
   await p.page.waitForTimeout(120);
+
+  // The turn can move on between whoseTurn() and this click — a queued shot auto-fires
+  // on its owner's turn. Tapping a cell off-turn QUEUES A PREMOVE rather than arming a
+  // shot, and that stray would fire later and corrupt the rest of the run. Re-check.
+  const stillMine = (await p.page.textContent('.topbar h1')).trim() === 'Your turn';
+  if (!stillMine) return null;
 
   const cell = wantCell ?? await p.page.$$eval(
     '.cell:not(.land):not(.miss):not(.hit)',
@@ -211,6 +238,10 @@ if (active) {
   const idle = pages.find((p) => p !== active);
   await idle.page.click('.tabs .tab:nth-child(2)'); // first opponent's board
   await idle.page.waitForTimeout(150);
+
+  // Start from a known-empty queue so the count below is exact.
+  const clear = await idle.page.$('[data-act="clear-queue"]');
+  if (clear) { await clear.click(); await idle.page.waitForTimeout(200); }
 
   const open = await idle.page.$$eval(
     '.cell:not(.land):not(.miss):not(.hit)',

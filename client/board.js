@@ -11,6 +11,12 @@ import { SHOT } from '/shared/constants.js';
 import { label } from '/shared/coords.js';
 import { SHEET, SHEET_W, SHEET_H, TILE, SHIPS, ISLAND_Y, ISLAND_COUNT } from '/sprite-map.js';
 
+// Player names reach this module (board and cell labels) and the server only caps them
+// at 16 characters — it does not strip markup. Escaping happens here, at the sink that
+// actually builds the HTML, so no caller can forget it.
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
 // --------------------------------------------------------------------- sprites
 
 /**
@@ -159,7 +165,7 @@ export function boardHTML(opts = {}) {
 
     cells += `<button class="${cls.join(' ')}" data-cell="${c}"`
       + ` tabindex="${c === tabStop ? '0' : '-1'}"`
-      + ` aria-label="${cellLabel(c, grid, { isLand, shot, ship, order })}"`
+      + ` aria-label="${esc(cellLabel(c, grid, { isLand, shot, ship, order }))}"`
       + (order ? ` data-pm="${order}"` : '')
       + (c === lastShot ? ' data-new' : '')
       + (style ? ` style="${style}"` : '')
@@ -186,7 +192,7 @@ export function boardHTML(opts = {}) {
       <div class="sweep"></div>
       <div class="hulls${plop ? ' plop' : ''}">${hulls}${ghostHull}</div>
     </div>
-    <div class="cells" role="group" aria-label="${name}">${cells}</div>
+    <div class="cells" role="group" aria-label="${esc(name)}">${cells}</div>
     ${tlines}
   </div>`;
 }
