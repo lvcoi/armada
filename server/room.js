@@ -8,9 +8,9 @@ import {
   MAX_PREMOVES, PREMOVE_DELAY_MS, SHOT,
 } from '../shared/constants.js';
 import { randomTerrainId, isLand } from '../shared/terrain.js';
-import { COUNTRIES, byCountry, powerCells } from '../shared/countries.js';
+import { COUNTRIES, byCountry, powerCells, POWER_BUDGET } from '../shared/countries.js';
 import { scatterPowerups, resolvePowerup, applyEffect } from './powerups.js';
-import { hurricaneState, sweepBoard } from './hurricane.js';
+import { hurricanePath, hurricaneState, sweepCells } from './hurricane.js';
 import { validateFleet, randomFleet, completeFleet } from '../shared/placement.js';
 import { fireAt, fleetSunk, openCells, rejectFire } from './game.js';
 
@@ -100,7 +100,7 @@ export class Room {
       // The country's accent doubles as the player colour, so every existing
       // colour-coded surface picks up the national identity for free.
       color: this.freeCountry().accent,
-      powerUses: 0,
+      powerBudget: 0,       // squares of superpower left; see POWER_BUDGET
       connected: true,
       ready: false,
       eliminated: false,
@@ -176,6 +176,9 @@ export class Room {
     // still has a real fleet and the Random button has something to shuffle away from.
     this.roundsPlayed = 0;
     this.stormPhase = null;
+    // The storm's track is rolled once, at the start, so every board is churned by the
+    // same wandering path rather than each getting its own weather.
+    this.stormTrack = hurricanePath(this.grid, this.rng);
 
     for (const p of this.players) {
       p.incoming = new Uint8Array(this.grid * this.grid);
@@ -183,7 +186,7 @@ export class Room {
       p.reveals = [];
       p.privateLog = [];
       p.selfDamage = [];
-      p.powerUses = byCountry(p.country)?.power.uses ?? 0;
+      p.powerBudget = POWER_BUDGET;
       this.applyFleet(p, randomFleet(this.terrainId, this.grid, this.rng));
       p.ready = false;
       // Each board hides its own pickups, so the same square can be a mine for one
@@ -380,7 +383,8 @@ export class Room {
           extraShot = true;
           break;
         case 'recharge':
-          attacker.powerUses += 1;
+          // One more strike, whatever a strike costs your navy.
+          attacker.powerBudget += byCountry(attacker.country)?.power.volley ?? 1;
           break;
         case 'reveal': {
           // The scan itself only knows WHICH squares it swept. The contents are read
@@ -529,18 +533,24 @@ export class Room {
 
     const country = byCountry(attacker.country);
     if (!country) fail(ERR.BAD_MESSAGE, 'You have no navy');
-    if (attacker.powerUses <= 0) fail(ERR.BAD_MESSAGE, `No ${country.power.name} left`);
+    const { power } = country;
+    const need = power.flexible ? 1 : power.volley;
+    if (attacker.powerBudget < need) fail(ERR.BAD_MESSAGE, `No ${power.name} left`);
 
     const target = this.byId(targetId);
     if (!target || target.id === attacker.id || target.eliminated) {
       fail(ERR.BAD_TARGET, 'Pick an opponent still in the game');
     }
 
-    let cells = powerCells(country.power, anchor ?? 0, this.grid, picked);
-    if (!cells || !cells.length) fail(ERR.BAD_MESSAGE, `${country.power.name} does not fit there`);
+    let cells = powerCells(power, anchor ?? 0, this.grid, picked);
+    if (!cells || !cells.length) fail(ERR.BAD_MESSAGE, `${power.name} does not fit there`);
+
+    // A flexible power spends one square per pick, so it can never commit more than
+    // the budget on the table.
+    if (power.flexible) cells = cells.slice(0, attacker.powerBudget);
 
     // A scatter only lands on some of the box it covers.
-    if (country.power.shape === 'scatter' && cells.length > country.power.n) {
+    if (power.shape === 'scatter' && cells.length > power.n) {
       const pool = [...cells];
       const picks = [];
       while (picks.length < country.power.n && pool.length) {
@@ -555,12 +565,18 @@ export class Room {
       && target.incoming[c] === SHOT.NONE);
     if (!legal.length) fail(ERR.BAD_MESSAGE, 'Nothing left to hit there');
 
-    attacker.powerUses -= 1;
+    // A shaped strike costs its full volley even if the coast ate part of the blast —
+    // you fired the weapon. A flexible one costs exactly the pilots you committed.
+    attacker.powerBudget -= power.flexible
+      ? Math.min(cells.length, attacker.powerBudget)
+      : power.volley;
+    if (attacker.powerBudget < 0) attacker.powerBudget = 0;
+
     this.bus.event({
       t: MSG.POWER_FIRE,
       attackerId: attacker.id,
       targetId: target.id,
-      power: country.power.name,
+      power: power.name,
       country: country.id,
       cells: legal,
     });
@@ -568,7 +584,7 @@ export class Room {
     // Every cell resolves as an ordinary shot, so mines and pickups still fire.
     for (const cell of legal) {
       if (target.eliminated) break;
-      this.resolveShot(attacker, target, cell, { power: country.power.name });
+      this.resolveShot(attacker, target, cell, { power: power.name });
     }
 
     if (this.checkGameOver()) return;
@@ -594,7 +610,7 @@ export class Room {
     if (this.phase !== PHASE.PLAYING) return;
     this.roundsPlayed += 1;
 
-    const state = hurricaneState(this.roundsPlayed, this.grid);
+    const state = hurricaneState(this.roundsPlayed, this.stormTrack);
     this.stormPhase = state;
     if (!state) return;
 
@@ -604,27 +620,25 @@ export class Room {
     }
     if (state.phase !== 'active') return;
 
+    const hit = new Set(state.cells);
     let moved = 0;
     let cleared = 0;
     for (const p of this.players) {
       if (p.eliminated) continue;
-      const res = sweepBoard(p, state.band, this.grid, this.terrainId, this.rng);
+      const res = sweepCells(p, state.cells, this.grid, this.terrainId, this.rng);
       moved += res.moved;
       cleared += res.cleared;
-      // Ships that moved are no longer where anyone thought they were, so any radar
-      // intel about this board is stale too.
+      // Ships that moved are no longer where anyone thought they were, so radar intel
+      // about this board is stale, and hidden mine damage inside the eye is wiped too.
       p.reveals = [];
-      p.selfDamage = p.selfDamage.filter((c) => {
-        const col = c % this.grid;
-        return col < state.band.from || col > state.band.to;
-      });
+      p.selfDamage = p.selfDamage.filter((c) => !hit.has(c));
     }
 
     this.bus.event({
-      t: MSG.HURRICANE, phase: 'active', band: state.band, moved, cleared,
+      t: MSG.HURRICANE, phase: 'active', cells: state.cells, center: state.center, moved, cleared,
     });
     this.log.push({
-      hurricane: true, band: state.band, moved, cleared, at: this.now(),
+      hurricane: true, cells: state.cells, moved, cleared, at: this.now(),
     });
   }
 
@@ -753,7 +767,7 @@ export class Room {
       p.reveals = [];
       p.privateLog = [];
       p.selfDamage = [];
-      p.powerUses = 0;
+      p.powerBudget = 0;
       p.lastNonce = null;
     }
     this.roundsPlayed = 0;

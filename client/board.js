@@ -104,11 +104,12 @@ export function boardHTML(opts = {}) {
   const {
     grid = 15, land = [], incoming = [], ships = [], selected = null,
     ghost = null, premoves = null, lastShot = null, plop = false,
-    scan = null, selfDamage = null, aim = null,
+    scan = null, selfDamage = null, aim = null, storm = null,
     name = 'Battle plot', disabled = false,
   } = opts;
 
   const hidden = new Set(selfDamage ?? []);
+  const eye = new Set(storm ?? []);
 
   const landSet = new Set(land);
   const shipAt = new Map();
@@ -175,6 +176,7 @@ export function boardHTML(opts = {}) {
     }
     if (hidden.has(c)) cls.push('mined');
     if (aim?.has(c)) cls.push('aim');
+    if (eye.has(c)) cls.push('storm');
 
     if (tabStop === null && !isLand) tabStop = c;
 

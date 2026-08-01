@@ -1,8 +1,8 @@
 // The playable navies. Each is pinned to the era its fleet actually mattered, but the
 // flag art is the modern one — this is a family game, not a history exam.
 //
-// Superpowers are all expressed as a SHAPE plus a number of uses, so the client only
-// has to know how to preview eight shapes rather than eight bespoke weapons.
+// Superpowers are all expressed as a SHAPE plus a per-strike cost, so the client only
+// has to know how to preview four shapes rather than eight bespoke weapons.
 //
 //   block   w x h contiguous rectangle, anchored top-left
 //   line    n cells in a straight line, horizontal or vertical
@@ -14,6 +14,18 @@
 
 export const POWER_SHAPES = { BLOCK: 'block', LINE: 'line', FREE: 'free', SCATTER: 'scatter' };
 
+/**
+ * Every navy gets the SAME total firepower — 18 squares over the whole game — and the
+ * only difference is the shape it arrives in. The US spends its 18 as two devastating
+ * 3x3 blocks; Japan spends the same 18 one square at a time, as eighteen pilots it can
+ * send in any number per turn. That keeps "which navy did you pick" a question of style
+ * rather than strength.
+ *
+ * `volley` is what one strike costs. A navy's number of strikes is simply
+ * POWER_BUDGET / volley, and every volley below divides 18 exactly.
+ */
+export const POWER_BUDGET = 18;
+
 export const COUNTRIES = [
   {
     id: 'us',
@@ -24,8 +36,8 @@ export const COUNTRIES = [
     accent: '#4b7bd4',
     power: {
       name: 'Nuclear Strike',
-      blurb: 'Flattens a 3×3 block. One shot, one chance.',
-      shape: POWER_SHAPES.BLOCK, w: 3, h: 3, uses: 1,
+      blurb: 'Two 3\u00d73 blocks. Eighteen squares, delivered twice.',
+      shape: POWER_SHAPES.BLOCK, w: 3, h: 3, volley: 9,
     },
   },
   {
@@ -37,8 +49,8 @@ export const COUNTRIES = [
     accent: '#c8443a',
     power: {
       name: 'Broadside',
-      blurb: 'Three shots in a line. Three broadsides a game.',
-      shape: POWER_SHAPES.LINE, n: 3, uses: 3,
+      blurb: 'Three in a line, six broadsides a game.',
+      shape: POWER_SHAPES.LINE, n: 3, volley: 3,
     },
   },
   {
@@ -50,8 +62,8 @@ export const COUNTRIES = [
     accent: '#e0555f',
     power: {
       name: 'Kamikaze',
-      blurb: 'Nine squares, anywhere you like. Once only.',
-      shape: POWER_SHAPES.FREE, n: 9, uses: 1,
+      blurb: 'Eighteen pilots. Send as many as you like each turn \u2014 one square each.',
+      shape: POWER_SHAPES.FREE, n: 1, volley: 1, flexible: true,
     },
   },
   {
@@ -63,8 +75,8 @@ export const COUNTRIES = [
     accent: '#d9a441',
     power: {
       name: 'Wolfpack',
-      blurb: 'Four squares, anywhere. Twice a game.',
-      shape: POWER_SHAPES.FREE, n: 4, uses: 2,
+      blurb: 'Three squares anywhere, six times a game.',
+      shape: POWER_SHAPES.FREE, n: 3, volley: 3,
     },
   },
   {
@@ -76,8 +88,8 @@ export const COUNTRIES = [
     accent: '#5b8fd6',
     power: {
       name: 'Missile Salvo',
-      blurb: 'Five in a straight line. Twice a game.',
-      shape: POWER_SHAPES.LINE, n: 5, uses: 2,
+      blurb: 'Six in a straight line, three times a game.',
+      shape: POWER_SHAPES.LINE, n: 6, volley: 6,
     },
   },
   {
@@ -89,8 +101,8 @@ export const COUNTRIES = [
     accent: '#e2b23c',
     power: {
       name: 'Swarm',
-      blurb: 'Five random hits inside a 3×3 box. Three times.',
-      shape: POWER_SHAPES.SCATTER, w: 3, h: 3, n: 5, uses: 3,
+      blurb: 'Six hits scattered inside a 3\u00d73 box, three times.',
+      shape: POWER_SHAPES.SCATTER, w: 3, h: 3, n: 6, volley: 6,
     },
   },
   {
@@ -102,8 +114,8 @@ export const COUNTRIES = [
     accent: '#3fae74',
     power: {
       name: 'Fast Attack',
-      blurb: 'A tight 2×2 strike. Three times a game.',
-      shape: POWER_SHAPES.BLOCK, w: 2, h: 2, uses: 3,
+      blurb: 'A two-square strike, nine times a game.',
+      shape: POWER_SHAPES.BLOCK, w: 2, h: 1, volley: 2,
     },
   },
   {
@@ -115,8 +127,8 @@ export const COUNTRIES = [
     accent: '#d4763a',
     power: {
       name: 'Armada',
-      blurb: 'A 3×2 wall of fire. Twice a game.',
-      shape: POWER_SHAPES.BLOCK, w: 3, h: 2, uses: 2,
+      blurb: 'A 3\u00d72 wall of fire, three times a game.',
+      shape: POWER_SHAPES.BLOCK, w: 3, h: 2, volley: 6,
     },
   },
 ];
@@ -134,7 +146,11 @@ export function powerCells(power, anchor, grid, picked = null) {
   const y0 = Math.floor(anchor / grid);
 
   if (power.shape === POWER_SHAPES.FREE) {
-    return Array.isArray(picked) ? picked.slice(0, power.n) : null;
+    if (!Array.isArray(picked)) return null;
+    // A flexible power (Japan's pilots) lets you commit as many as you like in one
+    // turn, so the cap is the budget you have left — the Room enforces that. A fixed
+    // free-aim power takes exactly its volley.
+    return power.flexible ? picked.slice() : picked.slice(0, power.n);
   }
 
   if (power.shape === POWER_SHAPES.LINE) {

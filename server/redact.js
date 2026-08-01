@@ -15,7 +15,7 @@ function projectPlayer(player, isSelf) {
     country: player.country,
     // How many superpower uses are left is public — knowing the US still has its nuke
     // is exactly the kind of tension that should be on the table.
-    powerUses: player.powerUses ?? 0,
+    powerBudget: player.powerBudget ?? 0,
     connected: player.connected,
     ready: player.ready,
     eliminated: player.eliminated,

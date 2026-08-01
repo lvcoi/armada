@@ -86,8 +86,12 @@ export const POWERUP_WEIGHTS = [
   [POWERUP.RECHARGE, 2],
 ];
 
-/** Roughly one pickup per 18 water cells, so a 12x12 board carries about 7. */
-export const POWERUP_DENSITY = 1 / 18;
+/**
+ * Roughly one pickup per 6 water cells, so a 12x12 board carries about 24. Dense on
+ * purpose: at the old 1-in-18 a short game could finish without anyone hitting a
+ * single one, which made the whole mechanic invisible.
+ */
+export const POWERUP_DENSITY = 1 / 6;
 export const RADAR_RADIUS = 1; // 1 -> a 3x3 patch
 
 /**

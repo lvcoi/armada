@@ -221,8 +221,8 @@ function stormHTML() {
       st.roundsLeft === 1 ? '' : 's'}. Ships caught in it get scattered.</div>`;
   }
   if (st.phase === 'active') {
-    return `<div class="storm live">🌀 <b>Hurricane over the fleet</b> — columns ${
-      st.band.from + 1}–${st.band.to + 1} are being churned.</div>`;
+    return '<div class="storm live">🌀 <b>Hurricane over the fleet</b> — ships in the eye '
+      + 'are being scattered and that water is being wiped clean.</div>';
   }
   return '';
 }
@@ -535,15 +535,22 @@ function battleScreen() {
   }
   const power = byCountry(my.country)?.power ?? null;
 
+  // A flexible power (Japan's pilots) is ready as soon as you have picked at least one;
+  // everything else needs its whole shape on the board.
+  const budget = my.powerBudget ?? 0;
+  const strikes = power ? Math.floor(budget / power.volley) : 0;
   const ready = ui.arming && power && aimCells(power, viewing)?.size > 0
-    && (power.shape !== 'free' || ui.picks.length === power.n);
+    && (power.shape !== 'free'
+      || (power.flexible ? ui.picks.length >= 1 : ui.picks.length === power.n));
   const armedSheet = `<div class="sheet">
       <div class="label">${esc(power?.name ?? '')} → <b>${esc(viewing.name)}</b></div>
-      <p class="center dim qhint">${power?.shape === 'free'
-        ? `Tap ${power.n} squares (${ui.picks.length}/${power.n} chosen).`
-        : power?.shape === 'line'
-          ? 'Tap a square, then choose the direction.'
-          : 'Tap a square — it anchors the top-left of the blast.'}</p>
+      <p class="center dim qhint">${power?.flexible
+        ? `Send as many as you like — <b>${ui.picks.length}</b> of ${budget} left this game.`
+        : power?.shape === 'free'
+          ? `Tap ${power.n} squares (${ui.picks.length}/${power.n} chosen).`
+          : power?.shape === 'line'
+            ? 'Tap a square, then choose the direction.'
+            : 'Tap a square — it anchors the top-left of the blast.'}</p>
       ${power?.shape === 'line' ? `<div class="row">
         <button class="btn${ui.lineDir === 'h' ? ' primary' : ''}" data-linedir="h">→ Across</button>
         <button class="btn${ui.lineDir === 'v' ? ' primary' : ''}" data-linedir="v">↓ Down</button>
@@ -552,9 +559,10 @@ function battleScreen() {
       <button class="btn ghost" data-act="power-cancel">Cancel</button>
     </div>`;
 
-  const powerBtn = (power && my.powerUses > 0 && isMyTurn() && !my.eliminated && !viewingSelf)
+  const powerBtn = (power && budget >= power.volley && isMyTurn() && !my.eliminated && !viewingSelf)
     ? `<button class="btn power" data-act="power-arm">
-         ${flagHTML(my.country, 14)} ${esc(power.name)} <span class="uses">×${my.powerUses}</span>
+         ${flagHTML(my.country, 14)} ${esc(power.name)}
+         <span class="uses">${power.flexible ? `${budget} left` : `×${strikes}`}</span>
        </button>`
     : '';
 
@@ -609,6 +617,7 @@ function battleScreen() {
           premoves: pmMap.size ? pmMap : null,
           lastShot,
           scan: scan.size ? scan : null,
+          storm: s.storm?.phase === 'active' ? s.storm.cells : null,
           selfDamage: viewingSelf ? (my.selfDamage ?? []) : null,
           aim: ui.arming && !viewingSelf ? aimCells(power, viewing) : null,
           name: viewingSelf ? 'Your waters' : `${viewing.name}'s waters`,
@@ -782,10 +791,11 @@ function onCell(cell) {
       if (s.land.includes(cell)) return toast('That square is land');
       if (viewing.incoming[cell] !== 0) return toast('Already fired there');
       if (power.shape === 'free') {
+        const cap = power.flexible ? (me().powerBudget ?? 0) : power.n;
         const at = ui.picks.indexOf(cell);
         if (at >= 0) ui.picks.splice(at, 1);
-        else if (ui.picks.length < power.n) ui.picks.push(cell);
-        else toast(`${power.name} takes ${power.n} squares`);
+        else if (ui.picks.length < cap) ui.picks.push(cell);
+        else toast(power.flexible ? `Only ${cap} left` : `${power.name} takes ${power.n} squares`);
       } else {
         ui.anchor = cell;
       }
