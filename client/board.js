@@ -9,7 +9,7 @@
 
 import { SHOT } from '/shared/constants.js';
 import { label } from '/shared/coords.js';
-import { SHEET, SHEET_W, SHEET_H, TILE, SHIPS, ISLAND_Y, ISLAND_COUNT } from '/sprite-map.js';
+import { SHEET, SHEET_W, SHEET_H, TILE, SHIPS, ISLAND_Y, ISLAND_COUNT, FLAGS } from '/sprite-map.js';
 
 // Player names reach this module (board and cell labels) and the server only caps them
 // at 16 characters — it does not strip markup. Escaping happens here, at the sink that
@@ -104,8 +104,11 @@ export function boardHTML(opts = {}) {
   const {
     grid = 15, land = [], incoming = [], ships = [], selected = null,
     ghost = null, premoves = null, lastShot = null, plop = false,
+    scan = null, selfDamage = null, aim = null,
     name = 'Battle plot', disabled = false,
   } = opts;
+
+  const hidden = new Set(selfDamage ?? []);
 
   const landSet = new Set(land);
   const shipAt = new Map();
@@ -161,6 +164,18 @@ export function boardHTML(opts = {}) {
     const order = premoves?.get(c);
     if (order) cls.push('queued');
 
+    // Private intel: what radar found, and mine damage that is deliberately absent
+    // from the public shot grid.
+    const found = scan?.get(c);
+    if (found) {
+      cls.push('scanned');
+      if (found.ship) cls.push('scan-ship');
+      if (found.powerup === 'mine') cls.push('scan-mine');
+      else if (found.powerup) cls.push('scan-pickup');
+    }
+    if (hidden.has(c)) cls.push('mined');
+    if (aim?.has(c)) cls.push('aim');
+
     if (tabStop === null && !isLand) tabStop = c;
 
     cells += `<button class="${cls.join(' ')}" data-cell="${c}"`
@@ -206,4 +221,12 @@ export function shipChipHTML(type) {
   const region = SHIPS[type];
   if (!region) return '';
   return `<span class="mini" style="--len:${region.w / TILE}">${spriteIMG(region)}</span>`;
+}
+
+/** A national flag badge. `size` is its height in px; width follows the 3:2 art. */
+export function flagHTML(countryId, size = 14) {
+  const region = FLAGS?.[countryId];
+  if (!region) return '';
+  return `<span class="flag" style="height:${size}px;width:${size * (region.w / region.h)}px">${
+    spriteIMG(region)}</span>`;
 }

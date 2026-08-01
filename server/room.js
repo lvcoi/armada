@@ -382,9 +382,21 @@ export class Room {
         case 'recharge':
           attacker.powerUses += 1;
           break;
-        case 'reveal':
-          attacker.reveals.push({ targetId: effect.targetId, cells: effect.cells, at: this.now() });
+        case 'reveal': {
+          // The scan itself only knows WHICH squares it swept. The contents are read
+          // here, where the defender's real state is: hull, and anything hidden in the
+          // water — mines included. This is the only place a ship that is still afloat
+          // is ever disclosed, and it goes to one player's private channel, never a
+          // broadcast and never into the public projection.
+          const scanned = target.id === effect.targetId ? target : this.byId(effect.targetId);
+          const findings = (effect.cells ?? []).map((c) => ({
+            cell: c,
+            ship: !!scanned && scanned.shipAt[c] >= 0,
+            powerup: scanned?.powerups?.get(c) ?? null,
+          }));
+          attacker.reveals.push({ targetId: effect.targetId, findings, at: this.now() });
           break;
+        }
         case 'selfHit': {
           // A mine is meant to be invisible to everyone else, so the damage counts
           // toward sinking but is scrubbed from the public shot grid. The owner still

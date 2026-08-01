@@ -108,10 +108,12 @@ function drawUS(r, x, y, w, h) {
 
   // 6/5 alternating rows of single pixels. Fifty stars is a texture at this size; the
   // honest version is a regular field dense enough to say "stars" and nothing more.
+  // Below ~2px of pitch even that collapses into noise, so the canton just stays blue.
   const rows = 5;
   const cols = 6;
   const dx = cw / (cols + 1);
   const dy = ch / (rows + 1);
+  if (dx < 2 || dy < 2) return;
   for (let ry = 0; ry < rows; ry++) {
     const odd = ry % 2 === 1;
     const n = odd ? cols - 1 : cols;
@@ -124,22 +126,25 @@ function drawUS(r, x, y, w, h) {
 function drawUK(r, x, y, w, h) {
   r.rect(x, y, w, h, C.ukBlue);
 
-  const uw = w - 1;
-  const uh = h - 1;
+  // Clamped: a 1px-tall interior would otherwise divide by zero and NaN its way through
+  // every r.set() below, silently dropping the saltire instead of failing loudly.
+  const uw = Math.max(1, w - 1);
+  const uh = Math.max(1, h - 1);
   const armW = h * 0.155; // white saltire, half-thickness measured vertically
-  const redW = h * 0.135; // red saltire thickness
-  const fim = Math.max(1, h * 0.035); // white left outside the red on the offset side
+  const redW = h * 0.095; // red saltire thickness
+  const fim = Math.max(1, h * 0.03); // white left outside the red on the offset side
 
   // The saltire is measured vertically, which is how the Union Flag actually stretches:
   // the arms stay corner-to-corner whatever the aspect ratio.
   //
-  // St Patrick's red is counterchanged, not centred — offset to one side of the white so
-  // the BROAD white sits above the red in the top-left. Getting this backwards is the
-  // classic upside-down Union Jack. The offset flips sign at mid-width, which gives the
-  // pinwheel: red meets the hoist edge below the top corner, the top edge left of the
-  // fly corner, and so on round.
-  const lo = armW - fim - redW;
+  // St Patrick's red is counterchanged, not centred — pushed far enough off the diagonal
+  // that WHITE holds every corner and the BROAD white sits above the red at the hoist.
+  // Getting this backwards is the classic upside-down Union Jack. The offset flips sign
+  // at mid-width, which gives the pinwheel: the red leaves the flag through the hoist
+  // edge below the top corner, through the top edge left of the fly corner, and so on
+  // round.
   const hi = armW - fim;
+  const lo = hi - redW;
   for (let py = y; py < y + h; py++) {
     for (let px = x; px < x + w; px++) {
       const su = (px - x) / uw;
@@ -186,12 +191,15 @@ function drawCN(r, x, y, w, h) {
   const gx = (u) => x + (u / 30) * (w - 1);
   const gy = (v) => y + (v / 20) * (h - 1);
   star(r, gx(5), gy(5), h * 0.17, C.cnGold);
+  // The four small stars need ~3px each plus clear red around them; any tighter and the
+  // cluster fuses with the big star into one gold smudge, so they drop out instead.
+  if (h < 20) return;
   for (const [u, v] of [[10, 2], [12.5, 4.5], [12.5, 8], [10, 10.5]]) {
     pip(r, gx(u), gy(v), C.cnGold);
   }
 }
 
-// Five strokes under a bar, closed by a base: the emblem's symmetry is what makes it
+// Five strokes rising from a base under a bar: the emblem's symmetry is what makes it
 // recognisable at 9px, so it is stamped rather than drawn from curves.
 const IR_EMBLEM = [
   '....#....',
@@ -200,7 +208,7 @@ const IR_EMBLEM = [
   '#.#.#.#.#',
   '#.#.#.#.#',
   '#.#.#.#.#',
-  '.#.#.#.#.',
+  '#.#.#.#.#',
   '.#######.',
 ];
 
@@ -208,23 +216,24 @@ function drawIR(r, x, y, w, h) {
   bands(r, x, y, w, h, [[C.irGreen, 1], [WHITE, 1], [C.irRed, 1]]);
   const gw = IR_EMBLEM[0].length;
   const gh = IR_EMBLEM.length;
-  if (w >= gw + 4 && h >= gh + 2) {
-    stamp(r, x + Math.round((w - gw) / 2), y + Math.round((h - gh) / 2), IR_EMBLEM, C.irRed);
-  }
+  // Only stamp it if the white band can hold it. Red emblem bleeding onto the green and
+  // red bands is worse than no emblem — the tricolour alone still says Iran.
+  if (h / 3 < gh || w < gw + 4) return;
+  stamp(r, x + Math.round((w - gw) / 2), y + Math.round((h - gh) / 2), IR_EMBLEM, C.irRed);
 }
 
-// The arms at 7x9: quartered shield under a crown. Not the real charges — at this size
-// nothing survives but the shape — so it reads as "there is a device here", which is the
-// only thing that separates Spain from a plain red-gold-red tricolour.
+// The arms at 7x8: a crowned shield with a pale, one third in from the hoist. None of
+// the real charges survive at this size, so this only claims to be a shield-shaped mark
+// — which is still the one thing separating Spain from a plain red-gold-red tricolour.
+// Flat top and a tapered foot: round both ends and it reads as a wax seal instead.
 const ES_ARMS = [
   '..###..',
-  '.#####.',
-  '#ABBBA#',
-  '#ABBBA#',
-  '#ABBBA#',
-  '#BAAAB#',
-  '#BAAAB#',
-  '.#BBB#.',
+  '#######',
+  '#AABAA#',
+  '#AABAA#',
+  '#AABAA#',
+  '#AABAA#',
+  '.#ABA#.',
   '..###..',
 ];
 
@@ -233,7 +242,8 @@ function drawES(r, x, y, w, h) {
 
   const gw = ES_ARMS[0].length;
   const gh = ES_ARMS.length;
-  if (w < gw + 8 || h < gh + 6) return;
+  // Same rule as Iran's emblem: it lives in the gold band or it does not appear at all.
+  if (h / 2 < gh || w < gw + 8) return;
   const ax = x + Math.round(w / 3) - Math.floor(gw / 2);
   const ay = y + Math.round((h - gh) / 2);
   for (let ry = 0; ry < gh; ry++) {
@@ -267,17 +277,18 @@ export function drawFlag(id, TILE) {
   const fn = DRAW[id];
   if (!fn) throw new Error(`drawFlag: unknown country "${id}"`);
 
-  const h = Math.max(4, Math.round(TILE));
-  const w = Math.max(6, Math.round(h * 1.5));
+  // Size is a contract the sprite sheet packs against, so it is honoured exactly rather
+  // than floored to something drawable — a 2px flag is nonsense, but silently handing
+  // back a 6px one would corrupt the atlas layout.
+  const h = Math.max(1, Math.round(TILE));
+  const w = Math.max(1, Math.round(h * 1.5));
   const r = new Raster(w, h);
 
-  fn(r, 1, 1, w - 2, h - 2);
+  if (w > 2 && h > 2) fn(r, 1, 1, w - 2, h - 2);
 
-  // Cloth, not a sticker: one lit row along the top, one shaded row along the bottom.
-  // Kept under 0.14 so it never competes with the flag's own blocks of colour.
-  r.rect(1, 1, w - 2, 1, '#ffffff', 0.13);
-  r.rect(1, h - 2, w - 2, 1, '#000000', 0.14);
-
+  // No shading pass. A lit top row and a shaded bottom row read as cloth at 32px and as
+  // grubby edges at 16px, and 16px is the size these actually ship at.
+  //
   // Ink border, drawn last so nothing paints over it.
   r.rect(0, 0, w, 1, INK);
   r.rect(0, h - 1, w, 1, INK);

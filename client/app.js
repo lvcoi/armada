@@ -8,7 +8,8 @@ import {
 import { label, shipCells } from '/shared/coords.js';
 import { canPlace } from '/shared/placement.js';
 import { Net, savedToken, savedName, forgetSession } from '/net.js';
-import { boardHTML, shipChipHTML } from '/board.js';
+import { boardHTML, shipChipHTML, flagHTML } from '/board.js';
+import { COUNTRIES, byCountry, powerCells } from '/shared/countries.js';
 import * as fx from '/fx.js';
 
 const app = document.getElementById('app');
@@ -24,6 +25,9 @@ const ui = {
   anchor: null,     // chosen anchor awaiting a direction
   premoves: [],     // local working copy of the queue; server echo is authoritative
   dragging: false,  // a swipe-to-queue gesture is in flight
+  arming: false,    // aiming the country superpower rather than a normal shot
+  picks: [],        // cells chosen so far for a free-aim / line power
+  confirm: null,    // { act, title, body, danger } -> a modal awaiting a yes/no
   plop: false,      // one-shot: hulls play their arrival pop on the next render
   swapDir: null,    // one-shot: board slides in from this side after a tab change
   serverGone: false,
@@ -208,6 +212,37 @@ function topbar(title, sub, deadlineAt) {
   </header>`;
 }
 
+/** The storm banner — everyone gets the same warning, which is the whole point. */
+function stormHTML() {
+  const st = ui.state?.storm;
+  if (!st) return '';
+  if (st.phase === 'warning') {
+    return `<div class="storm warn">⛈ <b>Hurricane inbound</b> — ${st.roundsLeft} round${
+      st.roundsLeft === 1 ? '' : 's'}. Ships caught in it get scattered.</div>`;
+  }
+  if (st.phase === 'active') {
+    return `<div class="storm live">🌀 <b>Hurricane over the fleet</b> — columns ${
+      st.band.from + 1}–${st.band.to + 1} are being churned.</div>`;
+  }
+  return '';
+}
+
+/** A yes/no sheet. Used for the host reset, which is not something to fat-finger. */
+function confirmHTML() {
+  const c = ui.confirm;
+  if (!c) return '';
+  return `<div class="modal-wrap" role="dialog" aria-modal="true" aria-label="${esc(c.title)}">
+    <div class="modal">
+      <h3>${esc(c.title)}</h3>
+      <p class="dim">${esc(c.body)}</p>
+      <div class="row">
+        <button class="btn ghost" data-act="confirm-no">Cancel</button>
+        <button class="btn ${c.danger ? 'fire' : 'primary'}" data-act="confirm-yes">${esc(c.yes)}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function playerRow(p) {
   const tags = [
     p.id === ui.state.hostId ? 'HOST' : '',
@@ -215,9 +250,10 @@ function playerRow(p) {
     p.eliminated ? 'SUNK' : '',
     ui.state.phase === PHASE.PLACEMENT && p.ready ? 'READY' : '',
   ].filter(Boolean).map((t) => `[${t}]`).join(' ');
+  const c = byCountry(p.country);
   return `<div class="player${p.connected ? '' : ' off'}" style="--pc:${p.color}">
-    <span class="avatar">${esc(p.name.slice(0, 1).toUpperCase())}</span>
-    <span class="nm">${esc(p.name)}</span>
+    ${flagHTML(p.country, 22) || `<span class="avatar">${esc(p.name.slice(0, 1).toUpperCase())}</span>`}
+    <span class="nm">${esc(p.name)}${c ? `<span class="navy">${esc(c.short)}</span>` : ''}</span>
     <span class="badge">${tags}</span>
   </div>`;
 }
@@ -266,6 +302,34 @@ function limitSlider(id, value, name) {
   </div>`;
 }
 
+/** Pick your navy. Taken ones are shown but disabled, so you can see the field. */
+function navyPicker() {
+  const s = ui.state;
+  const mine = me();
+  const takenBy = new Map(s.players.map((p) => [p.country, p]));
+  const cards = COUNTRIES.map((c) => {
+    const owner = takenBy.get(c.id);
+    const isMine = owner?.id === ui.you?.id;
+    const taken = owner && !isMine;
+    return `<button class="navy-card${isMine ? ' mine' : ''}${taken ? ' taken' : ''}"
+      data-navy="${c.id}" style="--pc:${c.accent}" ${taken ? 'disabled' : ''}
+      aria-pressed="${isMine}">
+      ${flagHTML(c.id, 26)}
+      <span class="navy-body">
+        <span class="navy-name">${esc(c.name)}</span>
+        <span class="navy-era">${esc(c.era)}</span>
+        <span class="navy-power"><b>${esc(c.power.name)}</b> — ${esc(c.power.blurb)}</span>
+      </span>
+      ${taken ? `<span class="navy-taken">${esc(owner.name)}</span>` : ''}
+    </button>`;
+  }).join('');
+
+  return `<div class="card">
+    <h2>Your navy${mine?.country ? ` — ${esc(byCountry(mine.country)?.name ?? '')}` : ''}</h2>
+    <div class="navies">${cards}</div>
+  </div>`;
+}
+
 function lobbyScreen() {
   const s = ui.state;
   const enough = s.players.length >= MIN_PLAYERS;
@@ -279,6 +343,7 @@ function lobbyScreen() {
         <div class="players">${s.players.map(playerRow).join('')}${empty}</div>
         ${enough ? `<p class="dim boardsize">Battle plot for ${s.players.length} captains: <b>${g}×${g}</b></p>` : ''}
       </div>
+      ${navyPicker()}
       <div class="card">
         <h2>Settings${isHost() ? '' : ' (host only)'}</h2>
         ${isHost()
@@ -388,7 +453,7 @@ function tabsHTML() {
       `<span class="pip${i < p.shipsRemaining ? ' on' : ''}"></span>`).join('');
     return `<button class="tab${p.eliminated ? ' out' : ''}${p.id === turnId ? ' turn' : ''}"
       data-tab="${p.id}" style="--pc:${p.color}" aria-selected="${ui.tab === p.id}">
-      <span class="nm">${isMine ? 'You' : esc(p.name)}</span>
+      <span class="nm">${flagHTML(p.country, 11)}${isMine ? 'You' : esc(p.name)}</span>
       <span class="pips">${pips}</span>
       <span class="swatch"></span>
     </button>`;
@@ -413,6 +478,21 @@ function feedHTML() {
       <span class="coord">${label(r.cell, s.grid)}</span> ${verb}${tag}</div>`;
   }).join('');
   return `<div class="card"><h2>Combat log</h2><div class="feed">${lines || '<div class="line">No shots yet.</div>'}</div></div>`;
+}
+
+/**
+ * Which cells the armed superpower would hit right now, for the on-board preview.
+ * Free-aim powers show exactly what you have picked; the shaped ones preview from
+ * the anchor you last tapped.
+ */
+function aimCells(power, viewing) {
+  if (!power) return null;
+  const g = grid();
+  if (power.shape === 'free') return new Set(ui.picks);
+  if (ui.anchor == null) return new Set();
+  const cells = powerCells(power, ui.anchor, g, power.shape === 'line' ? ui.lineDir : null);
+  if (!cells) return new Set([ui.anchor]);
+  return new Set(cells.filter((c) => !ui.state.land.includes(c) && viewing.incoming[c] === 0));
 }
 
 function battleScreen() {
@@ -447,9 +527,42 @@ function battleScreen() {
       ? '<p class="center dim qhint">QUEUE EMPTY — tap or swipe their waters to plot shots.</p>'
       : '';
 
+  // Radar intel and your own hidden mine damage, both private to you.
+  const scan = new Map();
+  for (const r of my.reveals ?? []) {
+    if (r.targetId !== viewing.id) continue;
+    for (const f of r.findings ?? []) scan.set(f.cell, f);
+  }
+  const power = byCountry(my.country)?.power ?? null;
+
+  const ready = ui.arming && power && aimCells(power, viewing)?.size > 0
+    && (power.shape !== 'free' || ui.picks.length === power.n);
+  const armedSheet = `<div class="sheet">
+      <div class="label">${esc(power?.name ?? '')} → <b>${esc(viewing.name)}</b></div>
+      <p class="center dim qhint">${power?.shape === 'free'
+        ? `Tap ${power.n} squares (${ui.picks.length}/${power.n} chosen).`
+        : power?.shape === 'line'
+          ? 'Tap a square, then choose the direction.'
+          : 'Tap a square — it anchors the top-left of the blast.'}</p>
+      ${power?.shape === 'line' ? `<div class="row">
+        <button class="btn${ui.lineDir === 'h' ? ' primary' : ''}" data-linedir="h">→ Across</button>
+        <button class="btn${ui.lineDir === 'v' ? ' primary' : ''}" data-linedir="v">↓ Down</button>
+      </div>` : ''}
+      <button class="btn fire" data-act="power-fire" ${ready ? '' : 'disabled'}>Unleash</button>
+      <button class="btn ghost" data-act="power-cancel">Cancel</button>
+    </div>`;
+
+  const powerBtn = (power && my.powerUses > 0 && isMyTurn() && !my.eliminated && !viewingSelf)
+    ? `<button class="btn power" data-act="power-arm">
+         ${flagHTML(my.country, 14)} ${esc(power.name)} <span class="uses">×${my.powerUses}</span>
+       </button>`
+    : '';
+
   const sheet = my.eliminated
     ? `<div class="sheet"><p class="center dim">You're out — enjoy the show.</p></div>`
-    : !isMyTurn()
+    : ui.arming
+      ? armedSheet
+      : !isMyTurn()
       ? `<div class="sheet">
            ${queueNote}
            <p class="center dim">Waiting for <b>${esc(turnName)}</b><span class="cursor">▍</span></p>
@@ -468,6 +581,7 @@ function battleScreen() {
            </div>`
         : `<div class="sheet">
              ${queueNote}
+             ${powerBtn}
              <p class="center dim">
              ${viewingSelf ? 'Pick an opponent above to attack.' : `Tap a square on ${esc(viewing.name)}'s waters.`}
            </p></div>`;
@@ -482,6 +596,7 @@ function battleScreen() {
       viewingSelf ? 'Your waters' : `${esc(viewing.name)}'s waters`,
       s.turn.deadlineAt)}
     <main>
+      ${stormHTML()}
       ${tabsHTML()}
       <div class="board-wrap${canQueue ? ' queueing' : ''}${swap}" data-board="${viewing.id}"
            style="--pc:${viewing.color}">
@@ -493,13 +608,18 @@ function battleScreen() {
           selected: ui.target?.targetId === viewing.id ? ui.target.cell : null,
           premoves: pmMap.size ? pmMap : null,
           lastShot,
+          scan: scan.size ? scan : null,
+          selfDamage: viewingSelf ? (my.selfDamage ?? []) : null,
+          aim: ui.arming && !viewingSelf ? aimCells(power, viewing) : null,
           name: viewingSelf ? 'Your waters' : `${viewing.name}'s waters`,
-          disabled: !canFire && !viewingSelf && !canQueue,
+          disabled: !canFire && !viewingSelf && !canQueue && !ui.arming,
         })}
       </div>
       ${feedHTML()}
+      ${isHost() ? '<button class="btn ghost slim danger" data-act="ask-reset">Reset game</button>' : ''}
     </main>
-    ${sheet}`;
+    ${sheet}
+    ${confirmHTML()}`;
 }
 
 // -------------------------------------------------- over
@@ -540,7 +660,7 @@ let lastScreen = '';
 function render() {
   const sc = screen();
   const key = JSON.stringify([sc, ui.state?.seq, ui.tab, ui.target, ui.selShip, ui.anchor,
-    ui.connected, ui.premoves]);
+    ui.connected, ui.premoves, ui.arming, ui.picks, ui.lineDir, ui.confirm]);
   if (key === lastKey) { tickClock(); return; }
   lastKey = key;
 
@@ -588,8 +708,17 @@ setInterval(tickClock, 250);
 
 app.addEventListener('click', (ev) => {
   if (swallowClick) return;
-  const el = ev.target.closest('[data-act],[data-cell],[data-tab],[data-ship],[data-nudge]');
+  const el = ev.target.closest('[data-act],[data-cell],[data-tab],[data-ship],[data-nudge],[data-navy],[data-linedir]');
   if (!el) return;
+
+  if (el.dataset.navy) {
+    net.send({ t: MSG.COUNTRY_SET, country: el.dataset.navy });
+    return;
+  }
+  if (el.dataset.linedir) {
+    ui.lineDir = el.dataset.linedir;
+    return schedule();
+  }
 
   if (el.dataset.tab) {
     const order = ui.state?.players.map((p) => p.id) ?? [];
@@ -645,6 +774,23 @@ function onCell(cell) {
     if (me().eliminated) return;
     if (!viewing || viewing.id === ui.you.id) return toast('Pick an opponent to attack');
     if (viewing.eliminated) return toast(`${viewing.name} is already out`);
+
+    // Aiming a superpower takes over the board.
+    if (ui.arming) {
+      const power = byCountry(me().country)?.power;
+      if (!power) return;
+      if (s.land.includes(cell)) return toast('That square is land');
+      if (viewing.incoming[cell] !== 0) return toast('Already fired there');
+      if (power.shape === 'free') {
+        const at = ui.picks.indexOf(cell);
+        if (at >= 0) ui.picks.splice(at, 1);
+        else if (ui.picks.length < power.n) ui.picks.push(cell);
+        else toast(`${power.name} takes ${power.n} squares`);
+      } else {
+        ui.anchor = cell;
+      }
+      return schedule();
+    }
 
     // Off-turn taps queue premoves instead of being refused.
     if (!isMyTurn()) return togglePremove(viewing, cell);
@@ -811,6 +957,50 @@ function onAction(act, el) {
       ui.premoves = [];
       sendPremoves();
       break;
+    case 'power-arm':
+      ui.arming = true;
+      ui.picks = [];
+      ui.anchor = null;
+      ui.lineDir = 'h';
+      ui.target = null;
+      break;
+    case 'power-cancel':
+      ui.arming = false;
+      ui.picks = [];
+      ui.anchor = null;
+      break;
+    case 'power-fire': {
+      const power = byCountry(me()?.country)?.power;
+      if (!power || !ui.tab) break;
+      net.send({
+        t: MSG.POWER_FIRE,
+        targetId: ui.tab,
+        anchor: power.shape === 'free' ? (ui.picks[0] ?? 0) : ui.anchor,
+        picked: power.shape === 'free' ? ui.picks : (power.shape === 'line' ? ui.lineDir : null),
+      });
+      ui.arming = false;
+      ui.picks = [];
+      ui.anchor = null;
+      break;
+    }
+    case 'ask-reset':
+      ui.confirm = {
+        act: 'reset',
+        title: 'Reset the game?',
+        body: 'Everyone goes back to the lobby. Fleets, damage and the whole board are lost. This cannot be undone.',
+        yes: 'Reset it',
+        danger: true,
+      };
+      break;
+    case 'confirm-no':
+      ui.confirm = null;
+      break;
+    case 'confirm-yes': {
+      const pending = ui.confirm;
+      ui.confirm = null;
+      if (pending?.act === 'reset') net.send({ t: MSG.GAME_RESET });
+      break;
+    }
     case 'unqueue': {
       const idx = Number(el.dataset.idx);
       if (Number.isInteger(idx) && idx >= 0 && idx < ui.premoves.length) {
