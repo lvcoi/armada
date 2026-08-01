@@ -5,7 +5,9 @@ import { randomUUID } from 'node:crypto';
 import {
   PHASE, MSG, ERR, MAX_PLAYERS, MIN_PLAYERS, gridFor,
   TIMER_STOPS, DEFAULT_TURN_LIMIT_MS, DEFAULT_PLACEMENT_LIMIT_MS, DISCONNECT_GRACE_MS,
-  MAX_PREMOVES, PREMOVE_DELAY_MS, SHOT,
+  MAX_PREMOVES, PREMOVE_DELAY_MS, SHOT, POWERUP, COLLECTABLE, NEEDS_TARGET,
+  ITEM_LABEL, RADAR_RADIUS, HURRICANE_SWEEP_MS,
+  HURRICANE_START_ROUND, HURRICANE_WARNING_ROUNDS,
 } from '../shared/constants.js';
 import { randomTerrainId, isLand } from '../shared/terrain.js';
 import { COUNTRIES, byCountry, powerCells, POWER_BUDGET } from '../shared/countries.js';
@@ -111,6 +113,8 @@ export class Room {
       shipAt: new Int8Array(0),
       incoming: new Uint8Array(0),
       premoves: [],             // [{ targetId, cell }] — fires one per turn until a hit
+      items: {},                // collected pickups: type -> count
+      freeShots: 0,             // banked 'spare shell' uses
       powerups: new Map(),      // cell -> POWERUP type hidden on THIS player's water
       reveals: [],              // radar results; projected to this player only
       privateLog: [],           // what only this player is told (their own mine damage)
@@ -178,6 +182,8 @@ export class Room {
     // still has a real fleet and the Random button has something to shuffle away from.
     this.roundsPlayed = 0;
     this.stormPhase = null;
+    this.stormActive = false;
+    this.stormStep = 0;
     // The storm's track is rolled once, at the start, so every board is churned by the
     // same wandering path rather than each getting its own weather.
     this.stormTrack = hurricanePath(this.grid, this.rng);
@@ -188,6 +194,8 @@ export class Room {
       p.reveals = [];
       p.privateLog = [];
       p.selfDamage = [];
+      p.items = {};
+      p.freeShots = 0;
       p.powerBudget = POWER_BUDGET;
       this.applyFleet(p, randomFleet(this.terrainId, this.grid, this.rng));
       p.ready = false;
@@ -299,6 +307,7 @@ export class Room {
 
   fire(playerId, { targetId, cell, nonce }) {
     if (this.phase !== PHASE.PLAYING) fail(ERR.WRONG_PHASE, 'The game is not running');
+    if (this.stormActive) fail(ERR.WRONG_PHASE, 'Wait for the storm to pass');
 
     const attacker = this.byId(playerId);
     if (!attacker) fail(ERR.BAD_MESSAGE, 'Unknown player');
@@ -372,6 +381,25 @@ export class Room {
     const type = target.powerups?.get(cell);
     if (!type) return false;
     target.powerups.delete(cell);
+
+    // Everything except a mine is CARRIED, not fired. You pick it up and choose when
+    // and where to spend it; only a mine goes off where it lies.
+    if (type !== POWERUP.MINE) {
+      attacker.items[type] = (attacker.items[type] ?? 0) + 1;
+      const got = {
+        t: MSG.POWERUP_FOUND,
+        powerup: type,
+        collected: true,
+        attackerId: attacker.id,
+        targetId: target.id,
+        cell,
+        note: `picked up a ${ITEM_LABEL[type].toLowerCase()}`,
+        at: this.now(),
+      };
+      this.log.push(got);
+      this.bus.event(got);
+      return false;
+    }
 
     const { effects, logNote } = resolvePowerup(
       type, { attacker, defender: target, cell, grid: this.grid, terrainId: this.terrainId }, this.rng,
@@ -516,6 +544,84 @@ export class Room {
     this.applyFire(attacker, pick.player, cell, true);
   }
 
+  // ---------------------------------------------------------------- carried items
+
+  /**
+   * Spend something you picked up. Items are free actions on your own turn — they do
+   * not cost you the shot — so the decision is when and where, not whether to attack.
+   */
+  useItem(playerId, { item, targetId = null, cell = null }) {
+    if (this.phase !== PHASE.PLAYING) fail(ERR.WRONG_PHASE, 'The game is not running');
+    if (this.stormActive) fail(ERR.WRONG_PHASE, 'Wait for the storm to pass');
+
+    const p = this.byId(playerId);
+    if (!p) fail(ERR.BAD_MESSAGE, 'Unknown player');
+    if (this.currentPlayerId() !== playerId) fail(ERR.NOT_YOUR_TURN, "It isn't your turn");
+    if (!COLLECTABLE.includes(item)) fail(ERR.BAD_MESSAGE, 'No such item');
+    if ((p.items[item] ?? 0) <= 0) fail(ERR.BAD_MESSAGE, `You have no ${ITEM_LABEL[item].toLowerCase()}`);
+
+    let detail = null;
+
+    if (item === POWERUP.RADAR) {
+      const target = this.byId(targetId);
+      if (!target || target.id === p.id || target.eliminated) {
+        fail(ERR.BAD_TARGET, 'Point the radar at an opponent still in the game');
+      }
+      if (!Number.isInteger(cell) || cell < 0 || cell >= this.grid * this.grid) {
+        fail(ERR.BAD_MESSAGE, 'That square is off the board');
+      }
+      const x = cell % this.grid;
+      const y = Math.floor(cell / this.grid);
+      const findings = [];
+      for (let dy = -RADAR_RADIUS; dy <= RADAR_RADIUS; dy++) {
+        for (let dx = -RADAR_RADIUS; dx <= RADAR_RADIUS; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || nx >= this.grid || ny < 0 || ny >= this.grid) continue;
+          const c = ny * this.grid + nx;
+          if (isLand(this.terrainId, c, this.grid)) continue; // land can hide nothing
+          findings.push({
+            cell: c,
+            ship: target.shipAt[c] >= 0,
+            powerup: target.powerups?.get(c) ?? null,
+          });
+        }
+      }
+      p.reveals.push({ targetId: target.id, findings, at: this.now() });
+      detail = { targetId: target.id, cell };
+    }
+
+    if (item === POWERUP.EXTRA) {
+      // Banked rather than spent now: the next shot this turn does not end the turn.
+      p.freeShots = (p.freeShots ?? 0) + 1;
+    }
+
+    if (item === POWERUP.REPAIR) {
+      const ok = applyEffect(
+        resolvePowerup(POWERUP.REPAIR, { attacker: p }, this.rng).effects[0] ?? {}, this,
+      );
+      if (!ok) fail(ERR.BAD_MESSAGE, 'Nothing to repair — your fleet is unscathed');
+      p.privateLog.push({ kind: 'repair', at: this.now() });
+    }
+
+    if (item === POWERUP.RECHARGE) {
+      p.powerBudget += byCountry(p.country)?.power.volley ?? 1;
+    }
+
+    p.items[item] -= 1;
+
+    const used = {
+      t: MSG.ITEM_USE,
+      item,
+      playerId: p.id,
+      ...(detail ?? {}),
+      at: this.now(),
+    };
+    this.log.push(used);
+    this.bus.event(used);
+    this.touch();
+  }
+
   // ---------------------------------------------------------------- superpowers
 
   /**
@@ -528,6 +634,7 @@ export class Room {
    */
   firePower(playerId, { targetId, anchor, picked = null }) {
     if (this.phase !== PHASE.PLAYING) fail(ERR.WRONG_PHASE, 'The game is not running');
+    if (this.stormActive) fail(ERR.WRONG_PHASE, 'Wait for the storm to pass');
 
     const attacker = this.byId(playerId);
     if (!attacker) fail(ERR.BAD_MESSAGE, 'Unknown player');
@@ -620,8 +727,51 @@ export class Room {
       this.bus.event({ t: MSG.HURRICANE, phase: 'warning', roundsLeft: state.roundsLeft });
       return;
     }
-    if (state.phase !== 'active') return;
+    // Landfall. The whole crossing runs as one continuous sweep rather than a step per
+    // round, with play suspended while it passes — see runStorm.
+    if (state.phase === 'active') this.runStorm();
+  }
 
+  /**
+   * Walk the storm across the map in about ten seconds, suspending play for the
+   * duration. Every step is broadcast so each phone can draw the eye where it is.
+   */
+  runStorm() {
+    if (this.stormActive) return;
+    this.stormActive = true;
+    this.stormStep = 0;
+
+    // Freeze the turn clock; nobody should lose a turn to the weather.
+    this.clearTimeout(this._turnTimer);
+    this._turnTimer = null;
+    this.clearTimeout(this._premoveTimer);
+    this._premoveTimer = null;
+    this.turn.deadlineAt = null;
+
+    const steps = this.stormTrack.length;
+    const gap = Math.max(120, Math.round(HURRICANE_SWEEP_MS / Math.max(1, steps)));
+    const tick = () => {
+      if (this.phase !== PHASE.PLAYING) { this.stormActive = false; return; }
+      const st = hurricaneState(HURRICANE_START_ROUND + HURRICANE_WARNING_ROUNDS + this.stormStep, this.stormTrack);
+      if (!st || st.phase !== 'active') {
+        // Out the far side: hand the game back.
+        this.stormActive = false;
+        this.stormPhase = { phase: 'passed' };
+        this.bus.event({ t: MSG.HURRICANE, phase: 'passed' });
+        this.armTurnTimer();
+        this.armPremove();
+        this.touch();
+        return;
+      }
+      this.applySweep(st);
+      this.stormStep += 1;
+      this._stormTimer = this.setTimeout(tick, gap);
+    };
+    tick();
+  }
+
+  applySweep(state) {
+    this.stormPhase = state;
     const hit = new Set(state.cells);
     let moved = 0;
     let cleared = 0;
@@ -656,6 +806,7 @@ export class Room {
     this.log.push({
       hurricane: true, cells: state.cells, moved, cleared, rehidden, at: this.now(),
     });
+    this.touch();
   }
 
   // ---------------------------------------------------------------- countries
@@ -718,6 +869,7 @@ export class Room {
 
   firePremove(playerId) {
     if (this.phase !== PHASE.PLAYING) return;
+    if (this.stormActive) return;
     if (this.currentPlayerId() !== playerId) return;
     const attacker = this.byId(playerId);
     if (!attacker || attacker.eliminated) return;
@@ -783,6 +935,8 @@ export class Room {
       p.reveals = [];
       p.privateLog = [];
       p.selfDamage = [];
+      p.items = {};
+      p.freeShots = 0;
       p.powerBudget = 0;
       p.lastNonce = null;
     }
@@ -793,6 +947,7 @@ export class Room {
   }
 
   dispose() {
+    this.clearTimeout(this._stormTimer);
     this.clearTimeout(this._turnTimer);
     this.clearTimeout(this._placementTimer);
     this.clearTimeout(this._premoveTimer);

@@ -848,6 +848,28 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .navy-power b { color: var(--amber); }
 .navy-taken { font: 600 10px/1 var(--font-hud); color: var(--dim); }
 
+/* ---- carried items ---- */
+
+.items { display: flex; gap: 6px; flex-wrap: wrap; }
+.item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--good);
+  background: color-mix(in oklab, var(--good) 12%, var(--abyss-2));
+  color: var(--ink);
+  font-size: 13px;
+  box-shadow: 0 2px 0 rgba(0, 0, 0, .4);
+}
+.item:active { transform: translateY(1px); box-shadow: 0 1px 0 rgba(0, 0, 0, .4); }
+.item:disabled { opacity: .45; border-color: var(--hairline-hi); background: var(--abyss-2); }
+.item .ig { font-size: 15px; line-height: 1; }
+.item .il { font-weight: 600; }
+.item .ic { font-family: var(--font-hud); font-size: 12px; color: var(--good); }
+.item:disabled .ic { color: var(--dim); }
+
 /* ---- superpower + storm + reset ---- */
 
 .btn.power {
@@ -1157,6 +1179,94 @@ input[type="range"]::-moz-range-thumb {
   width: 5px;
   height: 9px;
   border-radius: 1px;
+}
+
+/* Sea mine — white core, red shockwave, dark debris, smoke. Loudest thing on the
+   board, so it stays on threat red + white and never borrows the amber/phosphor look. */
+
+.fx-mine-core {
+  position: absolute;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  transform: translate3d(-50%, -50%, 0);
+  background: radial-gradient(circle, #fff 0 42%, rgba(255, 236, 220, .95) 56%,
+              rgba(255, 80, 49, .55) 76%, rgba(255, 80, 49, 0) 100%);
+}
+
+.fx-mine-ring {
+  position: absolute;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  transform: translate3d(-50%, -50%, 0);
+  border: 3px solid var(--threat);
+  box-shadow: 0 0 14px rgba(255, 80, 49, .55), inset 0 0 10px rgba(255, 120, 90, .35);
+}
+.fx-mine-ring.edge { border-width: 2px; border-color: rgba(255, 255, 255, .92); box-shadow: none; }
+
+.fx-debris {
+  position: absolute;
+  width: 6px;
+  height: 5px;
+  border-radius: 1px;
+  transform: translate3d(-50%, -50%, 0);
+  box-shadow: 0 0 0 1px rgba(255, 80, 49, .35);
+}
+
+.fx-mine-smoke {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  transform: translate3d(-50%, -50%, 0);
+  background: radial-gradient(circle, rgba(74, 66, 62, .85), rgba(30, 26, 24, 0) 70%);
+}
+
+/* Static end-state for the mine under reduced motion. */
+.fx-scorch {
+  position: absolute;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  transform: translate3d(-50%, -50%, 0);
+  border: 3px solid var(--threat);
+  background: radial-gradient(circle, rgba(255, 80, 49, .5), rgba(20, 6, 4, .7) 62%, transparent 78%);
+}
+
+/* Power-up collected — ring, rising glyph, sparkles. Tinted with --pc: the finder's
+   accent mixed with a per-kind hue, so the four kinds stay one family. */
+
+.fx-pickup-ring {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  transform: translate3d(-50%, -50%, 0);
+  border: 2px solid var(--pc, var(--phos));
+  box-shadow: 0 0 12px color-mix(in oklab, var(--pc, var(--phos)) 45%, transparent);
+}
+.fx-pickup-ring.soft { border-width: 1px; opacity: .55; box-shadow: none; }
+
+.fx-glyph {
+  position: absolute;
+  width: 46px;
+  height: 46px;
+  transform: translate3d(-50%, -50%, 0);
+  color: var(--pc, var(--phos));
+  filter: drop-shadow(0 0 7px color-mix(in oklab, var(--pc, var(--phos)) 55%, transparent))
+          drop-shadow(0 1px 2px rgba(2, 6, 8, .9));
+}
+.fx-glyph svg { display: block; width: 100%; height: 100%; }
+
+.fx-spark {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  transform: translate3d(-50%, -50%, 0);
+  background: var(--pc, var(--phos));
+  box-shadow: 0 0 6px color-mix(in oklab, var(--pc, var(--phos)) 60%, transparent);
 }
 
 .fx-scan {

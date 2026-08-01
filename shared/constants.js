@@ -71,10 +71,34 @@ export const PREMOVE_DELAY_MS = 700;
  */
 export const POWERUP = {
   MINE: 'mine',          // 1 hit on a random ship of YOURS; nobody else sees which
-  RADAR: 'radar',        // reveals a 3x3 patch of the defender's board, to you only
-  EXTRA: 'extra',        // fire again immediately
+  RADAR: 'radar',        // reveals a 3x3 patch of a chosen board, to you only
+  EXTRA: 'extra',        // your next shot this turn is free
   REPAIR: 'repair',      // heals one hit on one of your own ships
-  RECHARGE: 'recharge',  // one more use of your country's superpower
+  RECHARGE: 'recharge',  // one more strike from your country's superpower
+};
+
+/**
+ * A mine detonates the instant you shoot it — that is the whole point of a mine.
+ * Everything else is CARRIED: you pick it up and decide later when and where to
+ * spend it.
+ */
+export const COLLECTABLE = [POWERUP.RADAR, POWERUP.EXTRA, POWERUP.REPAIR, POWERUP.RECHARGE];
+
+/** Items that need you to aim at somebody before they do anything. */
+export const NEEDS_TARGET = [POWERUP.RADAR];
+
+export const ITEM_LABEL = {
+  [POWERUP.RADAR]: 'Radar',
+  [POWERUP.EXTRA]: 'Spare shell',
+  [POWERUP.REPAIR]: 'Repair crew',
+  [POWERUP.RECHARGE]: 'Supply crate',
+};
+
+export const ITEM_GLYPH = {
+  [POWERUP.RADAR]: '📡',
+  [POWERUP.EXTRA]: '🐚',
+  [POWERUP.REPAIR]: '🔧',
+  [POWERUP.RECHARGE]: '📦',
 };
 
 /** Draw weights — mines are the common one, so the board stays genuinely risky. */
@@ -99,9 +123,15 @@ export const RADAR_RADIUS = 1; // 1 -> a 3x3 patch
  * then a vertical band walks west to east, scattering every ship it touches.
  */
 export const HURRICANE_WARNING_ROUNDS = 3;
-export const HURRICANE_BAND = 3;          // columns wide
-export const HURRICANE_STEP = 3;          // columns advanced per round once it lands
+export const HURRICANE_BAND = 3;          // the eye is BAND x BAND squares
 export const HURRICANE_START_ROUND = 4;   // rounds played before the warning appears
+
+/**
+ * Once it makes landfall the storm crosses the whole map in a single continuous
+ * sweep rather than a step per round — about ten seconds of everyone watching their
+ * fleet get thrown around. Play is suspended while it passes.
+ */
+export const HURRICANE_SWEEP_MS = 10_000;
 
 export function timerLabel(ms) {
   if (ms == null) return 'No limit';
@@ -127,6 +157,7 @@ export const MSG = {
   FIRE: 'fire',
   PREMOVE_SET: 'premove/set',
   COUNTRY_SET: 'country/set',
+  ITEM_USE: 'item/use',
   POWER_FIRE: 'power/fire',
   POWERUP_FOUND: 'powerup/found',
   HURRICANE: 'hurricane',

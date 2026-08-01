@@ -42,6 +42,8 @@ function projectPlayer(player, isSelf) {
       reveals: (player.reveals ?? []).map((r) => ({ ...r })),
       privateLog: (player.privateLog ?? []).slice(-20),
       selfDamage: [...(player.selfDamage ?? [])],
+      items: { ...(player.items ?? {}) },
+      freeShots: player.freeShots ?? 0,
     };
   }
 

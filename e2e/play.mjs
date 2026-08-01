@@ -270,6 +270,58 @@ if (active) {
   check(autoFired, "queued shot fired automatically on the owner's turn");
 }
 
+// ---- power-ups are COLLECTED, not fired on discovery
+{
+  let holder = null;
+  let collectedKind = null;
+  // Boards carry ~1 pickup per 6 water cells, so this lands quickly. Bounded anyway.
+  for (let i = 0; i < 90 && !holder; i++) {
+    const p = await whoseTurn();
+    if (!p) break;
+    await takeTurn(p, 1 + (i % 2));
+    for (const q of pages) {
+      const chips = await q.page.$$eval('.item', (els) =>
+        els.map((e) => ({ item: e.dataset.item, text: e.textContent.replace(/\s+/g, ' ').trim() })));
+      if (chips.length) { holder = q; collectedKind = chips; break; }
+    }
+  }
+  check(!!holder, `somebody collected a power-up into their tray${holder ? ` (${holder.name})` : ''}`);
+  if (holder) {
+    log('tray:', collectedKind.map((c) => c.text).join(' | '));
+    if (SHOT_DIR) await holder.page.screenshot({ path: `${SHOT_DIR}/6-items.png` });
+
+    // A collected item must NOT have fired itself — radar reveals only appear on use.
+    const scannedBefore = await holder.page.$$eval('.cell.scanned', (e) => e.length);
+    check(scannedBefore === 0, `a collected radar did not auto-fire (${scannedBefore} scanned cells)`);
+
+    // Spend a self-targeting item and watch the count fall.
+    const spendable = collectedKind.find((c) => c.item !== 'radar');
+    if (spendable) {
+      // Items are spendable only on your own turn — the chip is disabled otherwise —
+      // so walk the rotation back round to the holder before clicking.
+      let mine = false;
+      for (let i = 0; i < 30 && !mine; i++) {
+        const p = await whoseTurn();
+        if (!p) break;
+        if (p === holder) { mine = true; break; }
+        await takeTurn(p, 1);
+      }
+      const enabled = await holder.page.$eval(`[data-item="${spendable.item}"]`, (el) => !el.disabled)
+        .catch(() => false);
+      check(mine && enabled,
+        `${holder.name}'s turn came round and the item is enabled (turn=${mine}, enabled=${enabled})`);
+
+      if (mine && enabled) {
+        const before = await holder.page.$$eval(`[data-item="${spendable.item}"] .ic`, (e) => e[0]?.textContent ?? '');
+        await holder.page.click(`[data-item="${spendable.item}"]`);
+        await holder.page.waitForTimeout(600);
+        const after = await holder.page.$$eval(`[data-item="${spendable.item}"] .ic`, (e) => e[0]?.textContent ?? 'gone');
+        check(before !== after, `spending "${spendable.item}" changed the tray (${before} -> ${after})`);
+      }
+    }
+  }
+}
+
 // ---- reconnection: reload mid-game and confirm the slot is reclaimed
 const beforeName = await ben.page.$$eval('.tab .nm', (e) => e.map((x) => x.textContent.trim()));
 await ben.page.reload();

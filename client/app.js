@@ -3,7 +3,7 @@
 
 import {
   MSG, PHASE, FLEET, TIMER_STOPS, timerLabel, MIN_PLAYERS,
-  MAX_PREMOVES, gridFor,
+  MAX_PREMOVES, gridFor, COLLECTABLE, NEEDS_TARGET, ITEM_LABEL, ITEM_GLYPH, POWERUP,
 } from '/shared/constants.js';
 import { label, shipCells } from '/shared/coords.js';
 import { canPlace } from '/shared/placement.js';
@@ -27,6 +27,7 @@ const ui = {
   premoves: [],     // local working copy of the queue; server echo is authoritative
   dragging: false,  // a swipe-to-queue gesture is in flight
   arming: false,    // aiming the country superpower rather than a normal shot
+  usingItem: null,  // a carried item that needs a square picked before it does anything
   picks: [],        // cells chosen so far for a free-aim / line power
   confirm: null,    // { act, title, body, danger } -> a modal awaiting a yes/no
   plop: false,      // one-shot: hulls play their arrival pop on the next render
@@ -36,6 +37,7 @@ const ui = {
 
 let lastKey = '';
 let toastTimer = null;
+let stormRoaring = false; // the storm roar plays once per crossing, not once per step
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -107,20 +109,38 @@ const net = new Net({
           : msg.attackerId === ui.you?.id ? sound.LEVEL.MINE : sound.LEVEL.OTHER);
         break;
       case MSG.POWERUP_FOUND: {
-        // Only the finder gets the full reaction; everyone else hears it happen.
-        const mine = msg.attackerId === ui.you?.id;
-        sound.play(msg.powerup === 'mine' ? 'mine' : 'pickup',
-          mine ? sound.LEVEL.SELF : sound.LEVEL.OTHER);
-        if (mine) {
-          const who = ui.state?.players.find((p) => p.id === msg.attackerId);
-          fx.banner(String(msg.note ?? '').toUpperCase(), who?.color, msg.powerup === 'mine');
-          if (msg.powerup === 'mine') buzz([90, 60, 90]);
+        const byMe = msg.attackerId === ui.you?.id;
+        const who = ui.state?.players.find((p) => p.id === msg.attackerId);
+        const isMine = msg.powerup === 'mine';
+        sound.play(isMine ? 'mine' : 'pickup', byMe ? sound.LEVEL.SELF : sound.LEVEL.OTHER);
+
+        // These are public events — everybody watches the blast or the pickup, not
+        // just whoever triggered it.
+        const rect = cellRect(msg.targetId, msg.cell);
+        if (rect) {
+          if (isMine) fx.mineBlast(rect);
+          else fx.pickupCollected(rect, msg.powerup, who?.color);
         }
+        fx.banner(
+          `${(who?.name ?? '?').toUpperCase()} ${String(msg.note ?? '').toUpperCase()}`,
+          who?.color, isMine,
+        );
+        if (byMe && isMine) buzz([90, 60, 90]);
+        break;
+      }
+      case MSG.ITEM_USE: {
+        const mine = msg.playerId === ui.you?.id;
+        sound.play('pickup', mine ? sound.LEVEL.SELF : sound.LEVEL.OTHER);
+        if (mine) fx.banner(`${ITEM_LABEL[msg.item] ?? 'ITEM'} USED`.toUpperCase(), null, false);
         break;
       }
       case MSG.HURRICANE:
+        // Only the first step of the crossing gets the roar; it fires every ~700ms.
         if (msg.phase === 'warning') sound.play('alarm', sound.LEVEL.SELF);
-        else if (msg.phase === 'active') sound.play('storm', sound.LEVEL.SELF);
+        else if (msg.phase === 'active' && !stormRoaring) {
+          stormRoaring = true;
+          sound.play('storm', sound.LEVEL.SELF);
+        } else if (msg.phase === 'passed') stormRoaring = false;
         break;
       case MSG.ERROR:
         handleError(msg);
@@ -264,6 +284,19 @@ function stormHTML() {
       + 'are being scattered and that water is being wiped clean.</div>';
   }
   return '';
+}
+
+/** What you are carrying. Items are free actions — spending one doesn't cost your shot. */
+function itemsHTML(my, canAct) {
+  const held = COLLECTABLE.filter((k) => (my.items?.[k] ?? 0) > 0);
+  if (!held.length) return '';
+  const chips = held.map((k) => `<button class="item" data-item="${k}" ${canAct ? '' : 'disabled'}
+      title="${esc(ITEM_LABEL[k])}">
+      <span class="ig">${ITEM_GLYPH[k]}</span>
+      <span class="il">${esc(ITEM_LABEL[k])}</span>
+      <span class="ic">×${my.items[k]}</span>
+    </button>`).join('');
+  return `<div class="items">${chips}</div>`;
 }
 
 /** A yes/no sheet. Used for the host reset, which is not something to fat-finger. */
@@ -612,6 +645,7 @@ function battleScreen() {
       : !isMyTurn()
       ? `<div class="sheet">
            ${queueNote}
+           ${itemsHTML(my, false)}
            <p class="center dim">Waiting for <b>${esc(turnName)}</b><span class="cursor">▍</span></p>
          </div>`
       : ui.target
@@ -626,8 +660,15 @@ function battleScreen() {
              <button class="btn fire" data-act="fire">FIRE · ${label(ui.target.cell, s.grid)}</button>
              <button class="btn ghost" data-act="cancel-fire">Cancel</button>
            </div>`
-        : `<div class="sheet">
+        : ui.usingItem
+          ? `<div class="sheet">
+               <div class="label">${ITEM_GLYPH[ui.usingItem]} ${esc(ITEM_LABEL[ui.usingItem])} → <b>${esc(viewing.name)}</b></div>
+               <p class="center dim qhint">Tap a square to scan the 3×3 around it.</p>
+               <button class="btn ghost" data-act="item-cancel">Cancel</button>
+             </div>`
+          : `<div class="sheet">
              ${queueNote}
+             ${itemsHTML(my, isMyTurn() && !my.eliminated)}
              ${powerBtn}
              <p class="center dim">
              ${viewingSelf ? 'Pick an opponent above to attack.' : `Tap a square on ${esc(viewing.name)}'s waters.`}
@@ -709,7 +750,7 @@ function render() {
   const sc = screen();
   const key = JSON.stringify([sc, ui.state?.seq, ui.tab, ui.target, ui.selShip, ui.anchor,
     ui.connected, ui.premoves, ui.arming, ui.picks, ui.lineDir, ui.confirm,
-    sound.isMuted()]);
+    ui.usingItem, sound.isMuted()]);
   if (key === lastKey) { tickClock(); return; }
   lastKey = key;
 
@@ -757,8 +798,21 @@ setInterval(tickClock, 250);
 
 app.addEventListener('click', (ev) => {
   if (swallowClick) return;
-  const el = ev.target.closest('[data-act],[data-cell],[data-tab],[data-ship],[data-nudge],[data-navy],[data-linedir]');
+  const el = ev.target.closest('[data-act],[data-cell],[data-tab],[data-ship],[data-nudge],[data-navy],[data-linedir],[data-item]');
   if (!el) return;
+
+  if (el.dataset.item) {
+    const item = el.dataset.item;
+    // Radar has to be aimed; everything else takes effect where it stands.
+    if (NEEDS_TARGET.includes(item)) {
+      ui.usingItem = item;
+      ui.arming = false;
+      ui.target = null;
+      return schedule();
+    }
+    net.send({ t: MSG.ITEM_USE, item });
+    return;
+  }
 
   if (el.dataset.navy) {
     net.send({ t: MSG.COUNTRY_SET, country: el.dataset.navy });
@@ -823,6 +877,13 @@ function onCell(cell) {
     if (me().eliminated) return;
     if (!viewing || viewing.id === ui.you.id) return toast('Pick an opponent to attack');
     if (viewing.eliminated) return toast(`${viewing.name} is already out`);
+
+    // Aiming a carried item takes over the board.
+    if (ui.usingItem) {
+      net.send({ t: MSG.ITEM_USE, item: ui.usingItem, targetId: viewing.id, cell });
+      ui.usingItem = null;
+      return schedule();
+    }
 
     // Aiming a superpower takes over the board.
     if (ui.arming) {
@@ -1027,6 +1088,9 @@ function onAction(act, el) {
       ui.arming = false;
       ui.picks = [];
       ui.anchor = null;
+      break;
+    case 'item-cancel':
+      ui.usingItem = null;
       break;
     case 'power-fire': {
       const power = byCountry(me()?.country)?.power;

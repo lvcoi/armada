@@ -155,6 +155,228 @@ export function smoke(rect) {
   }
 }
 
+// ------------------------------------------------------------------ mines & pickups
+
+/**
+ * A sea mine going off. Everyone on the board sees this one, so it has to hit harder
+ * than an ordinary hit burst: a white core that overexposes and collapses, a red
+ * shockwave running out, dark debris arcing under gravity, and smoke left hanging.
+ * ~860ms, threat red + white only — deliberately outside the amber/phosphor language.
+ */
+export function mineBlast(rect) {
+  const { x, y } = center(rect);
+  const at = `left:${x}px;top:${y}px`;
+
+  if (RM()) {
+    // No motion: hold the aftermath — a scorch ring — long enough to be read, then clear.
+    const s = node('fx-scorch', at);
+    setTimeout(() => s.remove(), 700);
+    return;
+  }
+
+  // 1. Core: blows past white, holds a beat, then collapses.
+  // Easing lives on the keyframes, not the effect: an effect-level easing warps the
+  // progress the offsets are read against, which would swallow the hold.
+  const core = node('fx-mine-core', at);
+  core.animate(
+    [
+      { transform: 'translate3d(-50%,-50%,0) scale(.25)', opacity: 1, easing: 'cubic-bezier(.05,.9,.2,1)' },
+      { transform: 'translate3d(-50%,-50%,0) scale(1.15)', opacity: 1, offset: 0.3, easing: 'linear' },
+      { transform: 'translate3d(-50%,-50%,0) scale(1)', opacity: 1, offset: 0.5, easing: 'cubic-bezier(.6,0,.9,.5)' },
+      { transform: 'translate3d(-50%,-50%,0) scale(.15)', opacity: 0 },
+    ],
+    { duration: 260, easing: 'linear' },
+  ).onfinish = () => core.remove();
+
+  // 2. Shockwave: a thin white edge out front, heavy red rings behind it.
+  const RINGS = [
+    ['fx-mine-ring edge', 3.6, 360, 0],
+    ['fx-mine-ring', 4.4, 620, 70],
+    ['fx-mine-ring', 2.7, 660, 210],
+  ];
+  for (const [cls, to, duration, delay] of RINGS) {
+    const r = node(cls, at);
+    // Opacity starts at 0 so a delayed ring is invisible while it waits its turn
+    // (a backwards fill would otherwise park a hard little donut on the cell).
+    r.animate(
+      [
+        { transform: 'translate3d(-50%,-50%,0) scale(.22)', opacity: 0, easing: 'linear' },
+        { transform: 'translate3d(-50%,-50%,0) scale(.5)', opacity: 1, offset: 0.07, easing: 'cubic-bezier(.05,.8,.3,1)' },
+        { transform: `translate3d(-50%,-50%,0) scale(${to})`, opacity: 0 },
+      ],
+      { duration, delay, easing: 'linear', fill: 'backwards' },
+    ).onfinish = () => r.remove();
+  }
+
+  // 3. Debris: casing fragments thrown up and out, then dragged back down.
+  const DEBRIS = ['#0a0d10', '#181f24', '#4a1409', '#ff5031'];
+  for (let i = 0; i < 18; i++) {
+    const p = node('fx-debris', `${at};background:${DEBRIS[i % DEBRIS.length]}`);
+    const a = Math.random() * Math.PI * 2;
+    const v = 46 + Math.random() * 98;
+    const vx = Math.cos(a) * v;
+    const vy = Math.sin(a) * v * 0.7 - 30; // biased upward, out of the water
+    const spin = (Math.random() - 0.5) * 720;
+    p.animate(
+      [
+        {
+          transform: 'translate3d(-50%,-50%,0) rotate(0deg) scale(1)',
+          opacity: 1,
+          easing: 'cubic-bezier(.1,.6,.4,1)', // thrown out hard, then drag takes over
+        },
+        {
+          transform: `translate3d(calc(-50% + ${vx * 0.62}px), calc(-50% + ${vy * 0.62}px), 0) rotate(${spin * 0.5}deg) scale(1)`,
+          opacity: 1,
+          offset: 0.45,
+          easing: 'cubic-bezier(.4,0,.9,.7)', // gravity wins
+        },
+        {
+          transform: `translate3d(calc(-50% + ${vx}px), calc(-50% + ${vy + 78}px), 0) rotate(${spin}deg) scale(.55)`,
+          opacity: 0,
+        },
+      ],
+      { duration: 620 + Math.random() * 200, easing: 'linear' },
+    ).onfinish = () => p.remove();
+  }
+
+  // 4. Smoke: the part that lingers after the violence is over.
+  for (let i = 0; i < 5; i++) {
+    const s = node('fx-mine-smoke', `left:${x + (Math.random() - 0.5) * 26}px;top:${y}px`);
+    s.animate(
+      [
+        { transform: 'translate3d(-50%,-50%,0) scale(.4)', opacity: 0, easing: 'ease-out' },
+        { transform: 'translate3d(-50%,-50%,0) scale(1.1)', opacity: 0.6, offset: 0.28, easing: 'linear' },
+        {
+          transform: `translate3d(calc(-50% + ${(Math.random() - 0.5) * 26}px), calc(-50% - 42px), 0) scale(2.1)`,
+          opacity: 0,
+        },
+      ],
+      { duration: 620, delay: 60 + i * 45, easing: 'linear', fill: 'backwards' },
+    ).onfinish = () => s.remove();
+  }
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** Build a power-up glyph from a shape list — no markup strings, no assets. */
+function glyphSVG(parts) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  for (const [k, v] of Object.entries({
+    viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+    'stroke-width': '2.05', 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+  })) svg.setAttribute(k, v);
+  for (const [tag, attrs] of parts) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+    svg.appendChild(el);
+  }
+  return svg;
+}
+
+/* The four power-ups: one viewBox and one stroke weight so they read as a family,
+   with a kind hue mixed into the finder's accent for a nudge of difference. */
+const PICKUPS = {
+  // Sweep arc.
+  radar: {
+    hue: '#5cc9ec',
+    parts: [
+      ['circle', { cx: 12, cy: 12, r: 9.4 }],
+      ['path', { d: 'M12 12 L12 2.6 A9.4 9.4 0 0 1 20.14 7.3 Z', fill: 'currentColor', stroke: 'none', opacity: 0.5 }],
+      ['path', { d: 'M12 12 L20.14 7.3' }],
+      ['circle', { cx: 12, cy: 12, r: 1.6, fill: 'currentColor', stroke: 'none' }],
+    ],
+  },
+  // Shell in its casing.
+  extra: {
+    hue: '#ffd9a0',
+    parts: [
+      ['path', { d: 'M12 2.2c2.9 2.8 4.2 5.5 4.2 8.1v10.5H7.8V10.3c0-2.6 1.3-5.3 4.2-8.1z' }],
+      ['path', { d: 'M7.8 11.6h8.4M7.8 16.2h8.4' }],
+    ],
+  },
+  // Repair cross.
+  repair: {
+    hue: '#3ddc97',
+    parts: [
+      ['circle', { cx: 12, cy: 12, r: 9.2, opacity: 0.5 }],
+      ['path', { d: 'M12 6.2v11.6M6.2 12h11.6', 'stroke-width': 3.3 }],
+    ],
+  },
+  // Supply crate.
+  recharge: {
+    hue: '#c9ffef',
+    parts: [
+      ['rect', { x: 3.2, y: 5.4, width: 17.6, height: 13.4, rx: 1.6 }],
+      ['path', { d: 'M3.2 9.6h17.6' }],
+      ['path', { d: 'M3.2 9.6 L20.8 18.8M20.8 9.6 L3.2 18.8', opacity: 0.45 }],
+    ],
+  },
+};
+
+/**
+ * Someone just picked a power-up up off the water — everyone sees it, so it has to
+ * read as GOOD: a soft ring opening out, the kind's glyph rising above the cell, and
+ * a few sparkles going up with it. ~860ms in the finder's accent colour.
+ */
+export function pickupCollected(rect, kind, color) {
+  const { x, y } = center(rect);
+  const at = `left:${x}px;top:${y}px`;
+  const k = PICKUPS[kind] ?? PICKUPS.extra;
+  const tint = `color-mix(in oklab, ${k.hue} 45%, ${color || '#39f0c3'})`;
+
+  const glyph = node('fx-glyph', at);
+  glyph.style.setProperty('--pc', tint);
+  glyph.appendChild(glyphSVG(k.parts));
+
+  if (RM()) {
+    // No motion: show the end of the story — glyph up, ring already open — and hold it.
+    const r = node('fx-pickup-ring', at);
+    r.style.setProperty('--pc', tint);
+    r.style.transform = 'translate3d(-50%,-50%,0) scale(1.7)';
+    r.style.opacity = '.5';
+    glyph.style.transform = 'translate3d(-50%, calc(-50% - 32px), 0)';
+    setTimeout(() => { r.remove(); glyph.remove(); }, 700);
+    return;
+  }
+
+  for (let i = 0; i < 2; i++) {
+    const r = node(`fx-pickup-ring${i ? ' soft' : ''}`, at);
+    r.style.setProperty('--pc', tint);
+    r.animate(
+      [
+        { transform: 'translate3d(-50%,-50%,0) scale(.35)', opacity: 0, easing: 'linear' },
+        { transform: 'translate3d(-50%,-50%,0) scale(.6)', opacity: 0.95, offset: 0.08, easing: 'cubic-bezier(.22,1,.36,1)' },
+        { transform: `translate3d(-50%,-50%,0) scale(${i ? 2.6 : 2})`, opacity: 0 },
+      ],
+      { duration: 700, delay: i * 130, easing: 'linear', fill: 'backwards' },
+    ).onfinish = () => r.remove();
+  }
+
+  glyph.animate(
+    [
+      { transform: 'translate3d(-50%, calc(-50% + 4px), 0) scale(.5)', opacity: 0, easing: 'cubic-bezier(.2,1.4,.5,1)' },
+      { transform: 'translate3d(-50%, calc(-50% - 6px), 0) scale(1.15)', opacity: 1, offset: 0.22, easing: 'ease-out' },
+      { transform: 'translate3d(-50%, calc(-50% - 28px), 0) scale(1)', opacity: 1, offset: 0.62, easing: 'ease-in' },
+      { transform: 'translate3d(-50%, calc(-50% - 52px), 0) scale(1)', opacity: 0 },
+    ],
+    { duration: 860, easing: 'linear' },
+  ).onfinish = () => glyph.remove();
+
+  for (let i = 0; i < 6; i++) {
+    const s = node('fx-spark', `left:${x + (Math.random() - 0.5) * 30}px;top:${y + 6}px`);
+    s.style.setProperty('--pc', tint);
+    const dx = (Math.random() - 0.5) * 26;
+    s.animate(
+      [
+        { transform: 'translate3d(-50%,-50%,0) scale(.4)', opacity: 0, easing: 'ease-out' },
+        { transform: `translate3d(calc(-50% + ${dx * 0.4}px), calc(-50% - 14px), 0) scale(1)`, opacity: 1, offset: 0.3, easing: 'linear' },
+        { transform: `translate3d(calc(-50% + ${dx}px), calc(-50% - ${34 + Math.random() * 24}px), 0) scale(.3)`, opacity: 0 },
+      ],
+      { duration: 620 + Math.random() * 200, delay: i * 45, easing: 'linear', fill: 'backwards' },
+    ).onfinish = () => s.remove();
+  }
+}
+
 // ------------------------------------------------------------------ moments
 
 /** "FLEET DESTROYED" stamp when someone is knocked out. */

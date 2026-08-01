@@ -54,6 +54,11 @@ export function dispatch(room, playerId, msg) {
     case MSG.PREMOVE_SET:
       return room.setPremoves(playerId, msg.premoves);
 
+    case MSG.ITEM_USE:
+      return room.useItem(playerId, {
+        item: msg.item, targetId: msg.targetId ?? null, cell: msg.cell ?? null,
+      });
+
     case MSG.COUNTRY_SET:
       return room.setCountry(playerId, msg.country);
 
