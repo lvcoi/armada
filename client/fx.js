@@ -33,14 +33,17 @@ export function banner(text, color = null, strong = false) {
     setTimeout(() => el.remove(), 900);
     return;
   }
+  // Easing rides on the keyframes, not the effect: an effect-level easing is applied to
+  // overall progress BEFORE offsets resolve, which silently crushes the hold in the
+  // middle. Same reason the mine blast sets easing per keyframe.
   el.animate(
     [
-      { opacity: 0, transform: 'translate3d(-24px, -50%, 0)' },
-      { opacity: 1, transform: 'translate3d(0, -50%, 0)', offset: 0.16 },
-      { opacity: 1, transform: 'translate3d(0, -50%, 0)', offset: 0.78 },
+      { opacity: 0, transform: 'translate3d(-24px, -50%, 0)', easing: 'ease-out' },
+      { opacity: 1, transform: 'translate3d(0, -50%, 0)', offset: 0.16, easing: 'linear' },
+      { opacity: 1, transform: 'translate3d(0, -50%, 0)', offset: 0.78, easing: 'ease-in' },
       { opacity: 0, transform: 'translate3d(12px, -50%, 0)' },
     ],
-    { duration: 1300, easing: 'ease-out' },
+    { duration: 1300, easing: 'linear' },
   ).onfinish = () => el.remove();
 }
 
@@ -306,9 +309,9 @@ const PICKUPS = {
   recharge: {
     hue: '#c9ffef',
     parts: [
-      ['rect', { x: 3.2, y: 5.4, width: 17.6, height: 13.4, rx: 1.6 }],
-      ['path', { d: 'M3.2 9.6h17.6' }],
-      ['path', { d: 'M3.2 9.6 L20.8 18.8M20.8 9.6 L3.2 18.8', opacity: 0.45 }],
+      ['rect', { x: 3.8, y: 5.4, width: 16.4, height: 14, rx: 1.3 }],
+      ['path', { d: 'M3.8 9.6h16.4' }], // lid
+      ['path', { d: 'M9.3 9.6v9.8M14.7 9.6v9.8', opacity: 0.55 }], // planks — an X here reads as an envelope
     ],
   },
 };
@@ -363,16 +366,17 @@ export function pickupCollected(rect, kind, color) {
   ).onfinish = () => glyph.remove();
 
   for (let i = 0; i < 6; i++) {
-    const s = node('fx-spark', `left:${x + (Math.random() - 0.5) * 30}px;top:${y + 6}px`);
+    // Spawned wide of the cell so they read beside the glyph, not behind it.
+    const s = node('fx-spark', `left:${x + (i % 2 ? 1 : -1) * (16 + Math.random() * 16)}px;top:${y + 8}px`);
     s.style.setProperty('--pc', tint);
-    const dx = (Math.random() - 0.5) * 26;
+    const dx = (Math.random() - 0.5) * 22;
     s.animate(
       [
         { transform: 'translate3d(-50%,-50%,0) scale(.4)', opacity: 0, easing: 'ease-out' },
         { transform: `translate3d(calc(-50% + ${dx * 0.4}px), calc(-50% - 14px), 0) scale(1)`, opacity: 1, offset: 0.3, easing: 'linear' },
         { transform: `translate3d(calc(-50% + ${dx}px), calc(-50% - ${34 + Math.random() * 24}px), 0) scale(.3)`, opacity: 0 },
       ],
-      { duration: 620 + Math.random() * 200, delay: i * 45, easing: 'linear', fill: 'backwards' },
+      { duration: 520 + Math.random() * 160, delay: i * 38, easing: 'linear', fill: 'backwards' },
     ).onfinish = () => s.remove();
   }
 }
@@ -390,12 +394,12 @@ export function stamp(text) {
   }
   el.animate(
     [
-      { opacity: 0, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1.6)' },
-      { opacity: 1, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1)', offset: 0.14 },
-      { opacity: 1, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1)', offset: 0.85 },
+      { opacity: 0, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1.6)', easing: 'cubic-bezier(.34,1.56,.64,1)' },
+      { opacity: 1, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1)', offset: 0.14, easing: 'linear' },
+      { opacity: 1, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1)', offset: 0.85, easing: 'ease-in' },
       { opacity: 0, transform: 'translate3d(-50%,-50%,0) rotate(-8deg) scale(1)' },
     ],
-    { duration: 1600, easing: 'cubic-bezier(.34,1.56,.64,1)' },
+    { duration: 1600, easing: 'linear' },
   ).onfinish = () => el.remove();
 }
 

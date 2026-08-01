@@ -295,7 +295,9 @@ if (active) {
     check(scannedBefore === 0, `a collected radar did not auto-fire (${scannedBefore} scanned cells)`);
 
     // Spend a self-targeting item and watch the count fall.
-    const spendable = collectedKind.find((c) => c.item !== 'radar');
+    // Radar needs a target, and a repair crew is legitimately refused when the fleet is
+    // undamaged — pick something that always spends.
+    const spendable = collectedKind.find((c) => c.item === 'extra' || c.item === 'recharge');
     if (spendable) {
       // Items are spendable only on your own turn — the chip is disabled otherwise —
       // so walk the rotation back round to the holder before clicking.

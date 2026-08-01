@@ -1216,11 +1216,12 @@ input[type="range"]::-moz-range-thumb {
 
 .fx-mine-smoke {
   position: absolute;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   transform: translate3d(-50%, -50%, 0);
-  background: radial-gradient(circle, rgba(74, 66, 62, .85), rgba(30, 26, 24, 0) 70%);
+  /* Light enough to read against the abyss, warm enough to look like burnt cordite. */
+  background: radial-gradient(circle, rgba(150, 142, 136, .85), rgba(70, 62, 58, 0) 70%);
 }
 
 /* Static end-state for the mine under reduced motion. */
@@ -1261,12 +1262,12 @@ input[type="range"]::-moz-range-thumb {
 
 .fx-spark {
   position: absolute;
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   transform: translate3d(-50%, -50%, 0);
   background: var(--pc, var(--phos));
-  box-shadow: 0 0 6px color-mix(in oklab, var(--pc, var(--phos)) 60%, transparent);
+  box-shadow: 0 0 8px color-mix(in oklab, var(--pc, var(--phos)) 75%, transparent);
 }
 
 .fx-scan {

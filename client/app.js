@@ -3,7 +3,7 @@
 
 import {
   MSG, PHASE, FLEET, TIMER_STOPS, timerLabel, MIN_PLAYERS,
-  MAX_PREMOVES, gridFor, COLLECTABLE, NEEDS_TARGET, ITEM_LABEL, ITEM_GLYPH, POWERUP,
+  MAX_PREMOVES, gridFor, COLLECTABLE, NEEDS_TARGET, ITEM_LABEL, ITEM_GLYPH, POWERUP, SHOT,
 } from '/shared/constants.js';
 import { label, shipCells } from '/shared/coords.js';
 import { canPlace } from '/shared/placement.js';
@@ -290,12 +290,23 @@ function stormHTML() {
 function itemsHTML(my, canAct) {
   const held = COLLECTABLE.filter((k) => (my.items?.[k] ?? 0) > 0);
   if (!held.length) return '';
-  const chips = held.map((k) => `<button class="item" data-item="${k}" ${canAct ? '' : 'disabled'}
-      title="${esc(ITEM_LABEL[k])}">
+
+  // A repair crew with nothing to repair is refused by the server, so don't offer it —
+  // an item that silently does nothing when tapped feels broken.
+  const hurt = (my.selfDamage?.length ?? 0) > 0
+    || (my.ships ?? []).some((s) => (s.cells ?? []).some((c) => my.incoming[c] === SHOT.HIT));
+
+  const chips = held.map((k) => {
+    const dead = !canAct || (k === POWERUP.REPAIR && !hurt);
+    const why = k === POWERUP.REPAIR && !hurt && canAct
+      ? 'Nothing to repair — your fleet is unscathed'
+      : ITEM_LABEL[k];
+    return `<button class="item" data-item="${k}" ${dead ? 'disabled' : ''} title="${esc(why)}">
       <span class="ig">${ITEM_GLYPH[k]}</span>
       <span class="il">${esc(ITEM_LABEL[k])}</span>
       <span class="ic">×${my.items[k]}</span>
-    </button>`).join('');
+    </button>`;
+  }).join('');
   return `<div class="items">${chips}</div>`;
 }
 
