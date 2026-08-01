@@ -4,7 +4,7 @@
 export const SHEET = '/sprites.png';
 export const TILE = 32;
 export const SHEET_W = 512;
-export const SHEET_H = 128;
+export const SHEET_H = 240;
 
 /** Ship sprites, drawn bow-right; the client rotates for vertical placement. */
 export const SHIPS = {
@@ -30,3 +30,16 @@ export const FLAGS = {
   ir: { x: 288, y: 96, w: 48, h: 32 },
   es: { x: 336, y: 96, w: 48, h: 32 },
 };
+
+/** Power-up icons, keyed by pickup type. */
+export const ICONS = {
+  mine: { x: 0, y: 128, w: 32, h: 32 },
+  radar: { x: 32, y: 128, w: 32, h: 32 },
+  extra: { x: 64, y: 128, w: 32, h: 32 },
+  repair: { x: 96, y: 128, w: 32, h: 32 },
+  recharge: { x: 128, y: 128, w: 32, h: 32 },
+};
+
+/** Looping hurricane frames, and the one-shot explosion. Both are strips. */
+export const STORM = { y: 160, size: 32, frames: 8 };
+export const BOOM = { y: 192, size: 48, frames: 8 };

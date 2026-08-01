@@ -14,6 +14,9 @@ import { encodePNG } from './png.js';
 import { drawShip } from './ships.js';
 import { drawIsland } from './islands.js';
 import { drawFlag } from './flags.js';
+import {
+  drawIcon, drawStorm, drawBoom, ICON_KINDS, STORM_FRAMES, BOOM_FRAMES,
+} from './effects.js';
 import { FLEET } from '../../shared/constants.js';
 import { COUNTRY_IDS } from '../../shared/countries.js';
 
@@ -67,7 +70,41 @@ const flags = COUNTRY_IDS.map((id, i) => {
 });
 if (flags.length * FLAG_W > SHEET_W) throw new Error('flag row overflows the sheet');
 
-const SHEET_H = flagY + TILE;
+// Item icons: one row, used both in the tray and on radar-revealed squares.
+const iconY = flagY + TILE;
+const icons = ICON_KINDS.map((kind, i) => {
+  const art = drawIcon(kind, TILE);
+  if (art.w !== TILE || art.h !== TILE) {
+    throw new Error(`icon ${kind}: expected ${TILE}x${TILE}, got ${art.w}x${art.h}`);
+  }
+  return { kind, art, x: i * TILE, y: iconY };
+});
+
+// The storm: one row of rotation frames that loop.
+const stormY = iconY + TILE;
+const storm = Array.from({ length: STORM_FRAMES }, (_, f) => {
+  const art = drawStorm(f, TILE);
+  if (art.w !== TILE || art.h !== TILE) {
+    throw new Error(`storm frame ${f}: expected ${TILE}x${TILE}, got ${art.w}x${art.h}`);
+  }
+  return { art, x: f * TILE, y: stormY };
+});
+
+// The explosion, played once. Bigger than a cell so the blast overspills it.
+const BOOM = TILE * 1.5;
+const boomY = stormY + TILE;
+const boom = Array.from({ length: BOOM_FRAMES }, (_, f) => {
+  const art = drawBoom(f, BOOM);
+  if (art.w !== BOOM || art.h !== BOOM) {
+    throw new Error(`boom frame ${f}: expected ${BOOM}x${BOOM}, got ${art.w}x${art.h}`);
+  }
+  return { art, x: f * BOOM, y: boomY };
+});
+if (icons.length * TILE > SHEET_W) throw new Error('icon row overflows the sheet');
+if (storm.length * TILE > SHEET_W) throw new Error('storm row overflows the sheet');
+if (boom.length * BOOM > SHEET_W) throw new Error('boom row overflows the sheet');
+
+const SHEET_H = boomY + BOOM;
 
 // ---------------------------------------------------------------- compose
 
@@ -75,6 +112,9 @@ const sheet = new Raster(SHEET_W, SHEET_H);
 for (const s of placed) sheet.blit(s.art, s.x, s.y);
 for (const i of islands) sheet.blit(i.art, i.x, i.y);
 for (const f of flags) sheet.blit(f.art, f.x, f.y);
+for (const i of icons) sheet.blit(i.art, i.x, i.y);
+for (const s of storm) sheet.blit(s.art, s.x, s.y);
+for (const b of boom) sheet.blit(b.art, b.x, b.y);
 
 const png = encodePNG(SHEET_W, SHEET_H, sheet.data);
 fs.writeFileSync(path.join(CLIENT, 'sprites.png'), png);
@@ -100,6 +140,15 @@ export const ISLAND_COUNT = ${ISLAND_COUNT};
 export const FLAGS = {
 ${flags.map((f) => `  ${f.id}: { x: ${f.x}, y: ${f.y}, w: ${f.art.w}, h: ${f.art.h} },`).join('\n')}
 };
+
+/** Power-up icons, keyed by pickup type. */
+export const ICONS = {
+${icons.map((i) => `  ${i.kind}: { x: ${i.x}, y: ${i.y}, w: ${TILE}, h: ${TILE} },`).join('\n')}
+};
+
+/** Looping hurricane frames, and the one-shot explosion. Both are strips. */
+export const STORM = { y: ${stormY}, size: ${TILE}, frames: ${STORM_FRAMES} };
+export const BOOM = { y: ${boomY}, size: ${BOOM}, frames: ${BOOM_FRAMES} };
 `;
 fs.writeFileSync(path.join(CLIENT, 'sprite-map.js'), manifest);
 
@@ -107,3 +156,6 @@ console.log(`sprites.png  ${SHEET_W}x${SHEET_H}  (${(png.length / 1024).toFixed(
 for (const s of placed) console.log(`  ${s.type.padEnd(11)} ${s.art.w}x${s.art.h} @ ${s.x},${s.y}`);
 console.log(`  islands     ${ISLAND_COUNT} tiles @ 0,${islandY}`);
 console.log(`  flags       ${flags.length} @ 0,${flagY}`);
+console.log(`  icons       ${icons.length} @ 0,${iconY}`);
+console.log(`  storm       ${storm.length} frames @ 0,${stormY}`);
+console.log(`  boom        ${boom.length} frames of ${BOOM}px @ 0,${boomY}`);

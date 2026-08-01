@@ -466,21 +466,42 @@ main {
   box-shadow: 0 0 0 1.5px rgba(2, 6, 8, .8);
 }
 
-/* The storm's eye, drawn on every board so nobody is surprised by their fleet moving. */
-.cell.storm::after {
-  content: "";
+/* ---- sprite frame strips ----
+   A one-frame window over the sheet; the image slides sideways by --run in whole
+   steps, so the animation is a pure transform. Both strips are 8 frames. */
+
+.strip {
   position: absolute;
-  inset: 0;
-  background:
-    repeating-linear-gradient(45deg, rgba(255, 255, 255, .16) 0 2px, transparent 2px 6px),
-    rgba(92, 201, 236, .22);
-  box-shadow: inset 0 0 0 1px rgba(200, 235, 255, .5);
-  z-index: 3;
+  display: block;
+  overflow: hidden;
+  pointer-events: none;
 }
+.strip .sprite { will-change: transform; }
+
+/* The storm's eye, drawn on every board so nobody is surprised by their fleet moving. */
+.strip.storm-anim { inset: 0; z-index: 3; }
+.strip.boom-anim { inset: 0; z-index: 8; }
+
+/* The blast itself lives in the FX layer, centred on the cell and bigger than it. */
+.fx-boom {
+  position: absolute;
+  transform: translate3d(-50%, -50%, 0);
+  pointer-events: none;
+}
+
 @media (prefers-reduced-motion: no-preference) {
-  .cell.storm::after { animation: churn .9s linear infinite; }
-  @keyframes churn { to { transform: translate3d(6px, 6px, 0); } }
+  .strip.storm-anim .sprite { animation: spriteRun 1.1s steps(8) infinite; }
+  .strip.boom-anim .sprite { animation: spriteRun .72s steps(8) 1 both; }
+  @keyframes spriteRun { to { transform: translateX(var(--run)); } }
 }
+/* Without motion the strip holds a single readable frame rather than flickering. */
+@media (prefers-reduced-motion: reduce) {
+  .strip.boom-anim .sprite { transform: translateX(calc(var(--run) / 8 * 3)); }
+}
+
+/* Revealed pickups sit inside the cell, under any shot marker. */
+.icon { position: relative; display: block; overflow: hidden; flex: none; }
+.cell .icon { position: absolute; inset: 16%; }
 
 /* Superpower blast preview. */
 .cell.aim::before {
@@ -865,7 +886,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .item:active { transform: translateY(1px); box-shadow: 0 1px 0 rgba(0, 0, 0, .4); }
 .item:disabled { opacity: .45; border-color: var(--hairline-hi); background: var(--abyss-2); }
-.item .ig { font-size: 15px; line-height: 1; }
+.item .ig { font-size: 15px; line-height: 1; display: grid; place-items: center; }
+.item .icon { position: relative; display: block; overflow: hidden; flex: none; }
 .item .il { font-weight: 600; }
 .item .ic { font-family: var(--font-hud); font-size: 12px; color: var(--good); }
 .item:disabled .ic { color: var(--dim); }
@@ -1259,6 +1281,10 @@ input[type="range"]::-moz-range-thumb {
           drop-shadow(0 1px 2px rgba(2, 6, 8, .9));
 }
 .fx-glyph svg { display: block; width: 100%; height: 100%; }
+/* When the sprite-sheet icon is used instead of the drawn glyph, it fills the same box
+   — but the sheet is already coloured, so the phosphor tint must not wash it out. */
+.fx-glyph .icon { width: 100% !important; height: 100% !important; }
+.fx-glyph:has(.icon) { color: transparent; }
 
 .fx-spark {
   position: absolute;

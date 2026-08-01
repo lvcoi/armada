@@ -9,7 +9,9 @@
 
 import { SHOT } from '/shared/constants.js';
 import { label } from '/shared/coords.js';
-import { SHEET, SHEET_W, SHEET_H, TILE, SHIPS, ISLAND_Y, ISLAND_COUNT, FLAGS } from '/sprite-map.js';
+import {
+  SHEET, SHEET_W, SHEET_H, TILE, SHIPS, ISLAND_Y, ISLAND_COUNT, FLAGS, ICONS, STORM, BOOM,
+} from '/sprite-map.js';
 
 // Player names reach this module (board and cell labels) and the server only caps them
 // at 16 characters — it does not strip markup. Escaping happens here, at the sink that
@@ -176,7 +178,11 @@ export function boardHTML(opts = {}) {
     }
     if (hidden.has(c)) cls.push('mined');
     if (aim?.has(c)) cls.push('aim');
-    if (eye.has(c)) cls.push('storm');
+
+    // Radar shows WHAT is hidden, so draw the actual pickup rather than a coloured box.
+    let inner = '';
+    if (found?.powerup) inner = iconHTML(found.powerup, null);
+    if (eye.has(c)) { cls.push('storm'); inner += stormHTML(); }
 
     if (tabStop === null && !isLand) tabStop = c;
 
@@ -186,7 +192,7 @@ export function boardHTML(opts = {}) {
       + (order ? ` data-pm="${order}"` : '')
       + (c === lastShot ? ' data-new' : '')
       + (style ? ` style="${style}"` : '')
-      + '></button>';
+      + `>${inner}</button>`;
   }
 
   // Targeting lines cross the full plot through the armed cell.
@@ -232,3 +238,37 @@ export function flagHTML(countryId, size = 14) {
   return `<span class="flag" style="height:${size}px;width:${size * (region.w / region.h)}px">${
     spriteIMG(region)}</span>`;
 }
+
+/**
+ * A power-up icon — the same art in the item tray and on a radar-revealed square.
+ * Pass a pixel size for the tray, or null on the board where CSS positions it against
+ * the cell.
+ */
+export function iconHTML(kind, size = 18) {
+  const region = ICONS?.[kind];
+  if (!region) return '';
+  const style = size == null ? '' : ` style="width:${size}px;height:${size}px"`;
+  return `<span class="icon"${style}>${spriteIMG(region)}</span>`;
+}
+
+/**
+ * A frame strip animated by sliding the sheet sideways under a one-frame window.
+ * The step is a percentage of the IMAGE's width, so it stays a pure transform and
+ * costs nothing to composite. Both strips are 8 frames — see the steps(8) in the CSS.
+ */
+function stripHTML(strip, cls, extraStyle = '') {
+  if (!strip) return '';
+  const w = (SHEET_W / strip.size) * 100;
+  const h = (SHEET_H / strip.size) * 100;
+  const t = (-strip.y / strip.size) * 100;
+  const run = -((strip.frames * strip.size) / SHEET_W) * 100;
+  return `<span class="strip ${cls}" style="${extraStyle}">
+    <img class="sprite" src="${SHEET}" alt="" draggable="false"
+      style="width:${w}%;height:${h}%;left:0;top:${t}%;--run:${run}%"></span>`;
+}
+
+/** The hurricane, looping. Sits over a cell inside the storm's eye. */
+export const stormHTML = () => stripHTML(STORM, 'storm-anim');
+
+/** One-shot explosion, sized larger than a cell so the blast overspills it. */
+export const boomHTML = () => stripHTML(BOOM, 'boom-anim');

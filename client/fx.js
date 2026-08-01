@@ -160,6 +160,28 @@ export function smoke(rect) {
 
 // ------------------------------------------------------------------ mines & pickups
 
+let boomMarkup = null; // built once; the sheet geometry never changes
+
+/**
+ * The sprite-sheet fireball, played once over the cell. Sized to the cell so it scales
+ * with the board, and positioned in #fx so a re-render cannot cut it short.
+ */
+export function spriteBoom(rect, scale = 1.6) {
+  if (!boomMarkup) return;
+  const { x, y } = center(rect);
+  const size = Math.max(rect.width, rect.height) * scale;
+  const el = node('fx-boom', `left:${x}px;top:${y}px;width:${size}px;height:${size}px`);
+  el.innerHTML = boomMarkup;
+  // The CSS animation is `1 both`, so it holds the last (empty) frame; clear it after.
+  setTimeout(() => el.remove(), RM() ? 420 : 820);
+}
+
+const iconMarkup = {};
+
+/** app.js hands us the markup so fx.js stays free of sprite-sheet knowledge. */
+export function useBoomSprite(markup) { boomMarkup = markup; }
+export function useIconSprites(byKind) { Object.assign(iconMarkup, byKind); }
+
 /**
  * A sea mine going off. Everyone on the board sees this one, so it has to hit harder
  * than an ordinary hit burst: a white core that overexposes and collapses, a red
@@ -169,6 +191,10 @@ export function smoke(rect) {
 export function mineBlast(rect) {
   const { x, y } = center(rect);
   const at = `left:${x}px;top:${y}px`;
+
+  // The pixel-art fireball is the star; the vector shockwave and debris below stay as
+  // garnish around it so the blast still throws something outward past the sprite.
+  spriteBoom(rect);
 
   if (RM()) {
     // No motion: hold the aftermath — a scorch ring — long enough to be read, then clear.
@@ -329,7 +355,10 @@ export function pickupCollected(rect, kind, color) {
 
   const glyph = node('fx-glyph', at);
   glyph.style.setProperty('--pc', tint);
-  glyph.appendChild(glyphSVG(k.parts));
+  // Prefer the sprite-sheet icon so the celebration matches the pixel art everywhere
+  // else; the drawn glyph stays as a fallback if the sheet has not been handed over.
+  if (iconMarkup[kind]) glyph.innerHTML = iconMarkup[kind];
+  else glyph.appendChild(glyphSVG(k.parts));
 
   if (RM()) {
     // No motion: show the end of the story — glyph up, ring already open — and hold it.

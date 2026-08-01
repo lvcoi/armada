@@ -8,10 +8,17 @@ import {
 import { label, shipCells } from '/shared/coords.js';
 import { canPlace } from '/shared/placement.js';
 import { Net, savedToken, savedName, forgetSession } from '/net.js';
-import { boardHTML, shipChipHTML, flagHTML } from '/board.js';
+import { boardHTML, shipChipHTML, flagHTML, iconHTML, boomHTML } from '/board.js';
 import { COUNTRIES, byCountry, powerCells } from '/shared/countries.js';
 import * as fx from '/fx.js';
 import * as sound from '/sound.js';
+
+// fx.js draws the effects but knows nothing about the sprite sheet, so hand it the
+// markup once at boot.
+fx.useBoomSprite(boomHTML());
+fx.useIconSprites(Object.fromEntries(
+  ['radar', 'extra', 'repair', 'recharge', 'mine'].map((k) => [k, iconHTML(k, 46)]),
+));
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -302,7 +309,7 @@ function itemsHTML(my, canAct) {
       ? 'Nothing to repair — your fleet is unscathed'
       : ITEM_LABEL[k];
     return `<button class="item" data-item="${k}" ${dead ? 'disabled' : ''} title="${esc(why)}">
-      <span class="ig">${ITEM_GLYPH[k]}</span>
+      <span class="ig">${iconHTML(k, 20) || ITEM_GLYPH[k]}</span>
       <span class="il">${esc(ITEM_LABEL[k])}</span>
       <span class="ic">×${my.items[k]}</span>
     </button>`;
