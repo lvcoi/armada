@@ -11,6 +11,7 @@ import { Net, savedToken, savedName, forgetSession } from '/net.js';
 import { boardHTML, shipChipHTML, flagHTML } from '/board.js';
 import { COUNTRIES, byCountry, powerCells } from '/shared/countries.js';
 import * as fx from '/fx.js';
+import * as sound from '/sound.js';
 
 const app = document.getElementById('app');
 const toastEl = document.getElementById('toast');
@@ -86,6 +87,7 @@ const net = new Net({
         if (msg.playerId === ui.you?.id) {
           buzz([40, 60, 40]);
           fx.banner('YOU HAVE THE CONN', null, true);
+          sound.play('ping', sound.LEVEL.SELF);
         } else {
           const p = ui.state?.players.find((x) => x.id === msg.playerId);
           if (p) fx.banner(`${p.name.toUpperCase()} HAS THE CONN`, p.color, false);
@@ -94,10 +96,32 @@ const net = new Net({
       }
       case MSG.ELIMINATED: {
         const p = ui.state?.players.find((x) => x.id === msg.playerId);
-        fx.stamp(p?.id === ui.you?.id ? 'YOUR FLEET IS DESTROYED' : `${(p?.name ?? '').toUpperCase()} — FLEET DESTROYED`);
-        if (p?.id === ui.you?.id) buzz(200);
+        const isMe = p?.id === ui.you?.id;
+        fx.stamp(isMe ? 'YOUR FLEET IS DESTROYED' : `${(p?.name ?? '').toUpperCase()} — FLEET DESTROYED`);
+        if (isMe) buzz(200);
+        sound.play('eliminated', isMe ? sound.LEVEL.SELF : sound.LEVEL.OTHER);
         break;
       }
+      case MSG.POWER_FIRE:
+        sound.play('power', msg.targetId === ui.you?.id ? sound.LEVEL.SELF
+          : msg.attackerId === ui.you?.id ? sound.LEVEL.MINE : sound.LEVEL.OTHER);
+        break;
+      case MSG.POWERUP_FOUND: {
+        // Only the finder gets the full reaction; everyone else hears it happen.
+        const mine = msg.attackerId === ui.you?.id;
+        sound.play(msg.powerup === 'mine' ? 'mine' : 'pickup',
+          mine ? sound.LEVEL.SELF : sound.LEVEL.OTHER);
+        if (mine) {
+          const who = ui.state?.players.find((p) => p.id === msg.attackerId);
+          fx.banner(String(msg.note ?? '').toUpperCase(), who?.color, msg.powerup === 'mine');
+          if (msg.powerup === 'mine') buzz([90, 60, 90]);
+        }
+        break;
+      }
+      case MSG.HURRICANE:
+        if (msg.phase === 'warning') sound.play('alarm', sound.LEVEL.SELF);
+        else if (msg.phase === 'active') sound.play('storm', sound.LEVEL.SELF);
+        break;
       case MSG.ERROR:
         handleError(msg);
         break;
@@ -118,15 +142,25 @@ function cellRect(targetId, cell) {
 /** Route one shot's result to the FX layer. */
 function fxShot(msg) {
   const mine = msg.targetId === ui.you?.id;
+  const byMe = msg.attackerId === ui.you?.id;
   if (mine && (msg.result === 'hit' || msg.result === 'sunk')) fx.struck();
 
+  // Loudest when it lands on you, normal when you fired it, background otherwise.
+  const level = mine ? sound.LEVEL.SELF : byMe ? sound.LEVEL.MINE : sound.LEVEL.OTHER;
+  if (byMe || mine) sound.play('fire', level * 0.7);
+
   const rect = cellRect(msg.targetId, msg.cell);
-  if (!rect) return;
+  if (!rect) {
+    // The board is not on screen, but the shot still deserves to be heard.
+    sound.play(msg.result === 'miss' ? 'miss' : msg.result === 'sunk' ? 'sunk' : 'hit', level);
+    return;
+  }
 
   const land = () => {
     if (msg.result === 'miss') fx.splash(rect);
     else fx.burst(rect);
     if (msg.result === 'sunk') fx.smoke(rect);
+    sound.play(msg.result === 'miss' ? 'miss' : msg.result === 'sunk' ? 'sunk' : 'hit', level);
   };
 
   if (mine) fx.shell(rect, land);
@@ -163,6 +197,7 @@ function applyState(msg) {
   if (prev && prev.phase !== PHASE.OVER && msg.phase === PHASE.OVER) {
     const winner = msg.players.find((p) => p.id === msg.winnerId);
     fx.victory(winner?.color);
+    sound.play('victory', sound.LEVEL.SELF);
   }
 }
 
@@ -206,8 +241,12 @@ function clockHTML(ms) {
 }
 
 function topbar(title, sub, deadlineAt) {
+  const m = sound.isMuted();
   return `<header class="topbar">
     <div><h1>${title}</h1>${sub ? `<div class="sub">${sub}</div>` : ''}</div>
+    <button class="mute${m ? ' off' : ''}" data-act="mute"
+      aria-pressed="${m}" aria-label="${m ? 'Turn sound on' : 'Turn sound off'}"
+      title="${m ? 'Sound off' : 'Sound on'}">${m ? '🔇' : '🔊'}</button>
     ${clockHTML(remaining(deadlineAt))}
   </header>`;
 }
@@ -669,7 +708,8 @@ let lastScreen = '';
 function render() {
   const sc = screen();
   const key = JSON.stringify([sc, ui.state?.seq, ui.tab, ui.target, ui.selShip, ui.anchor,
-    ui.connected, ui.premoves, ui.arming, ui.picks, ui.lineDir, ui.confirm]);
+    ui.connected, ui.premoves, ui.arming, ui.picks, ui.lineDir, ui.confirm,
+    sound.isMuted()]);
   if (key === lastKey) { tickClock(); return; }
   lastKey = key;
 
@@ -918,7 +958,16 @@ function onAction(act, el) {
     case 'join': {
       const name = app.querySelector('#nm')?.value.trim();
       if (!name) return toast('Type a name first');
+      // Browsers only allow audio to start from a real gesture, and this is the first
+      // one every player makes.
+      sound.unlock();
       net.hello(name);
+      break;
+    }
+    case 'mute': {
+      sound.unlock(); // toggling is itself a gesture, so this can also be the unlock
+      const nowMuted = sound.setMuted(!sound.isMuted());
+      if (!nowMuted) sound.play('ping', 0.5); // confirm it actually works
       break;
     }
     case 'start':

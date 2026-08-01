@@ -168,3 +168,18 @@ through the UI. It needs Playwright available:
 ```bash
 node e2e/play.mjs
 ```
+
+### Sound
+
+Every effect is synthesised in the browser from oscillators and a noise buffer — there
+are no audio files, so the game still works with no internet. The speaker button in the
+top bar mutes it, and the choice is remembered on that device.
+
+Browsers refuse to play audio until the player has interacted with the page, so sound
+unlocks on the tap that joins the game. Two caveats worth knowing on a phone:
+
+- **iPhones obey the physical silent switch.** If a phone is on silent, it stays silent
+  no matter what the game does.
+- Every phone plays its own audio. Events are mixed by whose they are — what happens to
+  you is loudest, what you did is next, and everyone else's shots sit in the background —
+  so three phones in one room don't shout over each other.
