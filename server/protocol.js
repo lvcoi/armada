@@ -57,6 +57,13 @@ export function dispatch(room, playerId, msg) {
     case MSG.COUNTRY_SET:
       return room.setCountry(playerId, msg.country);
 
+    case MSG.POWER_FIRE:
+      return room.firePower(playerId, {
+        targetId: msg.targetId,
+        anchor: msg.anchor,
+        picked: msg.picked ?? null,
+      });
+
     default:
       throw new GameError(ERR.BAD_MESSAGE, `Unknown message: ${msg.t}`);
   }

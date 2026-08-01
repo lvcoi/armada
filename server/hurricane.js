@@ -123,6 +123,10 @@ export function sweepBoard(player, band, grid, terrainId, rng = Math.random) {
   return { moved, cleared, stuck };
 }
 
+// Compared by cells rather than anchor+dir, so a ship can never be reported as moved
+// when it landed back on the exact water it started from.
+const samePlacement = (a, b) => a.length === b.length && a.every((c, i) => c === b[i]);
+
 /**
  * Pick somewhere legal for a scattered ship. Untouched water is preferred over water the
  * enemy has already shot at, so a moved ship really does vanish; the shot-at options are
@@ -135,9 +139,8 @@ function pickBerth(ship, terrainId, occupied, incoming, grid, rng) {
 
   for (let anchor = 0; anchor < grid * grid; anchor++) {
     for (const dir of ['h', 'v']) {
-      if (anchor === ship.anchor && dir === ship.dir) continue;
       const cells = canPlace(anchor, dir, ship.len, terrainId, occupied, grid);
-      if (!cells) continue;
+      if (!cells || samePlacement(cells, ship.cells)) continue;
       const spot = { anchor, dir, cells };
       (cells.every((c) => incoming[c] === SHOT.NONE) ? fresh : searched).push(spot);
     }

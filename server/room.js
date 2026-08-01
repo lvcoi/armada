@@ -5,10 +5,12 @@ import { randomUUID } from 'node:crypto';
 import {
   PHASE, MSG, ERR, MAX_PLAYERS, MIN_PLAYERS, gridFor,
   TIMER_STOPS, DEFAULT_TURN_LIMIT_MS, DEFAULT_PLACEMENT_LIMIT_MS, DISCONNECT_GRACE_MS,
-  MAX_PREMOVES, PREMOVE_DELAY_MS,
+  MAX_PREMOVES, PREMOVE_DELAY_MS, SHOT,
 } from '../shared/constants.js';
 import { randomTerrainId, isLand } from '../shared/terrain.js';
-import { COUNTRIES, byCountry } from '../shared/countries.js';
+import { COUNTRIES, byCountry, powerCells } from '../shared/countries.js';
+import { scatterPowerups, resolvePowerup, applyEffect } from './powerups.js';
+import { hurricaneState, sweepBoard } from './hurricane.js';
 import { validateFleet, randomFleet, completeFleet } from '../shared/placement.js';
 import { fireAt, fleetSunk, openCells, rejectFire } from './game.js';
 
@@ -107,6 +109,10 @@ export class Room {
       shipAt: new Int8Array(0),
       incoming: new Uint8Array(0),
       premoves: [],             // [{ targetId, cell }] — fires one per turn until a hit
+      powerups: new Map(),      // cell -> POWERUP type hidden on THIS player's water
+      reveals: [],              // radar results; projected to this player only
+      privateLog: [],           // what only this player is told (their own mine damage)
+      selfDamage: [],           // mine hits on their fleet — hidden from the public board
       lastSeenAt: this.now(),
       lastNonce: null,
     };
@@ -168,12 +174,23 @@ export class Room {
 
     // Everyone starts from a legal random layout, so a player who does nothing at all
     // still has a real fleet and the Random button has something to shuffle away from.
+    this.roundsPlayed = 0;
+    this.stormPhase = null;
+
     for (const p of this.players) {
       p.incoming = new Uint8Array(this.grid * this.grid);
       p.premoves = [];
+      p.reveals = [];
+      p.privateLog = [];
+      p.selfDamage = [];
       p.powerUses = byCountry(p.country)?.power.uses ?? 0;
       this.applyFleet(p, randomFleet(this.terrainId, this.grid, this.rng));
       p.ready = false;
+      // Each board hides its own pickups, so the same square can be a mine for one
+      // player and open water for another — exactly like the shot grids.
+      p.powerups = scatterPowerups(
+        this.terrainId, this.grid, new Set(p.ships.flatMap((s) => s.cells)), this.rng,
+      );
     }
 
     const limit = this.settings.placementLimitMs;
@@ -304,7 +321,12 @@ export class Room {
     this.applyFire(attacker, target, cell, false);
   }
 
-  applyFire(attacker, target, cell, auto, premove = false) {
+  /**
+   * Resolve ONE shot completely — damage, hidden pickup, elimination — without
+   * touching whose turn it is. Superpowers fire several of these in a row, and an
+   * "extra shot" pickup has to keep the turn, so turn control lives in applyFire.
+   */
+  resolveShot(attacker, target, cell, { auto = false, premove = false, power = null } = {}) {
     const outcome = fireAt(target, cell);
 
     const record = {
@@ -316,6 +338,7 @@ export class Room {
       at: this.now(),
       auto,
       ...(premove ? { premove: true } : {}),
+      ...(power ? { power } : {}),
     };
     this.log.push(record);
     this.bus.event({ t: MSG.FIRE_RESULT, ...record });
@@ -324,13 +347,95 @@ export class Room {
     // is scrapped so they can react to being hit; the attacker's keeps running.
     if (outcome.result !== 'miss') target.premoves = [];
 
+    const extraShot = this.triggerPowerup(attacker, target, cell);
+
     if (fleetSunk(target)) {
       target.eliminated = true;
       target.premoves = [];
       this.bus.event({ t: MSG.ELIMINATED, playerId: target.id });
     }
+    return { outcome, extraShot };
+  }
+
+  /**
+   * Did that square hide something? Everyone is told WHAT was triggered and by whom —
+   * that is the drama — but the consequences that should stay secret (which of your own
+   * ships a mine wrecked, what radar showed you) go only to the player they belong to,
+   * carried in per-player state rather than a broadcast.
+   */
+  triggerPowerup(attacker, target, cell) {
+    const type = target.powerups?.get(cell);
+    if (!type) return false;
+    target.powerups.delete(cell);
+
+    const { effects, logNote } = resolvePowerup(
+      type, { attacker, defender: target, cell, grid: this.grid, terrainId: this.terrainId }, this.rng,
+    );
+
+    let extraShot = false;
+    for (const effect of effects) {
+      applyEffect(effect, this);
+      switch (effect.kind) {
+        case 'extraShot':
+          extraShot = true;
+          break;
+        case 'recharge':
+          attacker.powerUses += 1;
+          break;
+        case 'reveal':
+          attacker.reveals.push({ targetId: effect.targetId, cells: effect.cells, at: this.now() });
+          break;
+        case 'selfHit': {
+          // A mine is meant to be invisible to everyone else, so the damage counts
+          // toward sinking but is scrubbed from the public shot grid. The owner still
+          // sees it, via their own private channel.
+          attacker.incoming[effect.cell] = SHOT.NONE;
+          attacker.selfDamage.push(effect.cell);
+          attacker.privateLog.push({
+            kind: 'mine', cell: effect.cell, shipType: effect.shipType,
+            sunk: !!effect.sinks, at: this.now(),
+          });
+          if (effect.sinks && fleetSunk(attacker)) {
+            attacker.eliminated = true;
+            attacker.premoves = [];
+            this.bus.event({ t: MSG.ELIMINATED, playerId: attacker.id });
+          }
+          break;
+        }
+        case 'heal':
+          attacker.privateLog.push({ kind: 'repair', cell: effect.cell, shipType: effect.shipType, at: this.now() });
+          break;
+        default:
+          break;
+      }
+    }
+
+    const found = {
+      t: MSG.POWERUP_FOUND,
+      powerup: type,
+      attackerId: attacker.id,
+      targetId: target.id,
+      cell,
+      note: logNote,
+      at: this.now(),
+    };
+    this.log.push({ ...found, attackerId: attacker.id, targetId: target.id });
+    this.bus.event(found);
+    return extraShot;
+  }
+
+  applyFire(attacker, target, cell, auto, premove = false) {
+    const { outcome, extraShot } = this.resolveShot(attacker, target, cell, { auto, premove });
 
     if (this.checkGameOver()) return outcome;
+    // An "extra shot" pickup keeps the turn — but you have to be at the table to take
+    // it. A shot the timer fired on your behalf does not earn you a bonus turn you
+    // would only time out of again.
+    if (extraShot && !auto && !attacker.eliminated) {
+      this.armTurnTimer();
+      this.touch();
+      return outcome;
+    }
     this.advanceTurn();
     return outcome;
   }
@@ -358,6 +463,9 @@ export class Room {
       const pos = (this.turn.pos + step) % this.seating.length;
       const p = this.byId(this.seating[pos]);
       if (p && !p.eliminated) {
+        // Wrapping past the end of the seating order is one full round played, which
+        // is the clock the storm runs on.
+        if (pos <= this.turn.pos) this.endOfRound();
         this.turn.pos = pos;
         this.armTurnTimer();
         this.armPremove();
@@ -390,6 +498,71 @@ export class Room {
     this.applyFire(attacker, pick.player, cell, true);
   }
 
+  // ---------------------------------------------------------------- superpowers
+
+  /**
+   * Fire your country's weapon at one defender. The shape is re-derived here from the
+   * country definition — the client sends only an anchor (and, for the free-aim and
+   * line shapes, its picks) so it can never invent a bigger blast than it is owed.
+   *
+   * Cells that are land or already spent are skipped rather than rejected: a nuke that
+   * clips the coast still detonates.
+   */
+  firePower(playerId, { targetId, anchor, picked = null }) {
+    if (this.phase !== PHASE.PLAYING) fail(ERR.WRONG_PHASE, 'The game is not running');
+
+    const attacker = this.byId(playerId);
+    if (!attacker) fail(ERR.BAD_MESSAGE, 'Unknown player');
+    if (this.currentPlayerId() !== playerId) fail(ERR.NOT_YOUR_TURN, "It isn't your turn");
+
+    const country = byCountry(attacker.country);
+    if (!country) fail(ERR.BAD_MESSAGE, 'You have no navy');
+    if (attacker.powerUses <= 0) fail(ERR.BAD_MESSAGE, `No ${country.power.name} left`);
+
+    const target = this.byId(targetId);
+    if (!target || target.id === attacker.id || target.eliminated) {
+      fail(ERR.BAD_TARGET, 'Pick an opponent still in the game');
+    }
+
+    let cells = powerCells(country.power, anchor ?? 0, this.grid, picked);
+    if (!cells || !cells.length) fail(ERR.BAD_MESSAGE, `${country.power.name} does not fit there`);
+
+    // A scatter only lands on some of the box it covers.
+    if (country.power.shape === 'scatter' && cells.length > country.power.n) {
+      const pool = [...cells];
+      const picks = [];
+      while (picks.length < country.power.n && pool.length) {
+        picks.push(pool.splice(Math.floor(this.rng() * pool.length), 1)[0]);
+      }
+      cells = picks;
+    }
+
+    const legal = [...new Set(cells)].filter((c) =>
+      Number.isInteger(c) && c >= 0 && c < this.grid * this.grid
+      && !isLand(this.terrainId, c, this.grid)
+      && target.incoming[c] === SHOT.NONE);
+    if (!legal.length) fail(ERR.BAD_MESSAGE, 'Nothing left to hit there');
+
+    attacker.powerUses -= 1;
+    this.bus.event({
+      t: MSG.POWER_FIRE,
+      attackerId: attacker.id,
+      targetId: target.id,
+      power: country.power.name,
+      country: country.id,
+      cells: legal,
+    });
+
+    // Every cell resolves as an ordinary shot, so mines and pickups still fire.
+    for (const cell of legal) {
+      if (target.eliminated) break;
+      this.resolveShot(attacker, target, cell, { power: country.power.name });
+    }
+
+    if (this.checkGameOver()) return;
+    this.advanceTurn();
+  }
+
   // ---------------------------------------------------------------- premoves
 
   /**
@@ -398,6 +571,51 @@ export class Room {
    * Entries are sanitized here; whether a cell is still fireable is checked again at
    * fire time, because the board keeps changing while shots sit in the queue.
    */
+  // ---------------------------------------------------------------- the storm
+
+  /**
+   * One full trip round the table. The hurricane is announced a few rounds out, then
+   * a band walks across every board at once, scattering ships and — the whole point —
+   * wiping everyone's hard-won intel about that strip of ocean.
+   */
+  endOfRound() {
+    if (this.phase !== PHASE.PLAYING) return;
+    this.roundsPlayed += 1;
+
+    const state = hurricaneState(this.roundsPlayed, this.grid);
+    this.stormPhase = state;
+    if (!state) return;
+
+    if (state.phase === 'warning') {
+      this.bus.event({ t: MSG.HURRICANE, phase: 'warning', roundsLeft: state.roundsLeft });
+      return;
+    }
+    if (state.phase !== 'active') return;
+
+    let moved = 0;
+    let cleared = 0;
+    for (const p of this.players) {
+      if (p.eliminated) continue;
+      const res = sweepBoard(p, state.band, this.grid, this.terrainId, this.rng);
+      moved += res.moved;
+      cleared += res.cleared;
+      // Ships that moved are no longer where anyone thought they were, so any radar
+      // intel about this board is stale too.
+      p.reveals = [];
+      p.selfDamage = p.selfDamage.filter((c) => {
+        const col = c % this.grid;
+        return col < state.band.from || col > state.band.to;
+      });
+    }
+
+    this.bus.event({
+      t: MSG.HURRICANE, phase: 'active', band: state.band, moved, cleared,
+    });
+    this.log.push({
+      hurricane: true, band: state.band, moved, cleared, at: this.now(),
+    });
+  }
+
   // ---------------------------------------------------------------- countries
 
   /** First navy nobody has claimed — new joiners always land on a free one. */
@@ -519,9 +737,15 @@ export class Room {
       p.shipAt = new Int8Array(0);
       p.incoming = new Uint8Array(0);
       p.premoves = [];
+      p.powerups = new Map();
+      p.reveals = [];
+      p.privateLog = [];
+      p.selfDamage = [];
       p.powerUses = 0;
       p.lastNonce = null;
     }
+    this.roundsPlayed = 0;
+    this.stormPhase = null;
 
     this.touch();
   }

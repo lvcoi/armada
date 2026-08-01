@@ -37,6 +37,11 @@ function projectPlayer(player, isSelf) {
       })),
       // Your battle plan is yours alone — never projected to anyone else.
       premoves: player.premoves.map((m) => ({ ...m })),
+      // Likewise what only you were told: which of your ships a mine wrecked, what
+      // radar showed you, and where your own hidden damage sits.
+      reveals: (player.reveals ?? []).map((r) => ({ ...r })),
+      privateLog: (player.privateLog ?? []).slice(-20),
+      selfDamage: [...(player.selfDamage ?? [])],
     };
   }
 
@@ -62,6 +67,9 @@ export function projectState(room, viewerId) {
     settings: { ...room.settings },
     terrainId: room.terrainId,
     grid: room.grid,
+    // The storm is public by design — the warning is the whole point.
+    storm: room.stormPhase ?? null,
+    roundsPlayed: room.roundsPlayed ?? 0,
     land: room.terrainId && room.grid ? landCells(room.terrainId, room.grid) : [],
     you: viewerId,
     players: room.players.map((p) => projectPlayer(p, p.id === viewerId)),

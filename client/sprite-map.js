@@ -4,7 +4,7 @@
 export const SHEET = '/sprites.png';
 export const TILE = 32;
 export const SHEET_W = 512;
-export const SHEET_H = 96;
+export const SHEET_H = 128;
 
 /** Ship sprites, drawn bow-right; the client rotates for vertical placement. */
 export const SHIPS = {
@@ -18,3 +18,15 @@ export const SHIPS = {
 /** 16 island autotiles in one row, indexed by neighbour mask N=1 E=2 S=4 W=8. */
 export const ISLAND_Y = 64;
 export const ISLAND_COUNT = 16;
+
+/** National flags, keyed by country id. */
+export const FLAGS = {
+  us: { x: 0, y: 96, w: 48, h: 32 },
+  uk: { x: 48, y: 96, w: 48, h: 32 },
+  jp: { x: 96, y: 96, w: 48, h: 32 },
+  de: { x: 144, y: 96, w: 48, h: 32 },
+  ru: { x: 192, y: 96, w: 48, h: 32 },
+  cn: { x: 240, y: 96, w: 48, h: 32 },
+  ir: { x: 288, y: 96, w: 48, h: 32 },
+  es: { x: 336, y: 96, w: 48, h: 32 },
+};
