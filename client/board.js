@@ -7,7 +7,7 @@
 // Ship and island art comes from client/sprites.png via the generated sprite-map.
 // Rebuild both with `npm run sprites` after editing anything in tools/sprites/.
 
-import { SHOT } from '/shared/constants.js';
+import { HURRICANE_BAND, SHOT } from '/shared/constants.js';
 import { label } from '/shared/coords.js';
 import {
   SHEET, SHEET_W, SHEET_H, TILE, SHIPS, ISLAND_Y, ISLAND_COUNT, FLAGS, ICONS, STORM, BOOM,
@@ -111,7 +111,8 @@ export function boardHTML(opts = {}) {
   } = opts;
 
   const hidden = new Set(selfDamage ?? []);
-  const eye = new Set(storm ?? []);
+  const stormCells = Array.isArray(storm) ? storm : (storm?.cells ?? []);
+  const eye = new Set(stormCells);
 
   const landSet = new Set(land);
   const shipAt = new Map();
@@ -182,7 +183,10 @@ export function boardHTML(opts = {}) {
     // Radar shows WHAT is hidden, so draw the actual pickup rather than a coloured box.
     let inner = '';
     if (found?.powerup) inner = iconHTML(found.powerup, null);
-    if (eye.has(c)) { cls.push('storm'); inner += stormHTML(); }
+    // The storm is one 3×3 object, not one icon per occupied cell. Keep a lightweight
+    // cell marker for state/debugging; the actual sprite is added as one board overlay
+    // below the cell grid.
+    if (eye.has(c)) cls.push('storm-cell');
 
     if (tabStop === null && !isLand) tabStop = c;
 
@@ -207,6 +211,8 @@ export function boardHTML(opts = {}) {
   // Only the painted layers are clipped — the caustics and radar sweep are deliberately
   // oversized. The cell grid stays outside the clip so an armed target's reticle and a
   // queue badge on an edge cell are not sliced off by the board's rounded corner.
+  const stormLayer = stormOverlayHTML(storm, grid);
+
   return `<div class="board${disabled ? ' disabled' : ''}" style="--grid:${grid}">
     <div class="plot">
       <div class="water"></div>
@@ -215,6 +221,7 @@ export function boardHTML(opts = {}) {
       <div class="sweep"></div>
       <div class="hulls${plop ? ' plop' : ''}">${hulls}${ghostHull}</div>
     </div>
+    ${stormLayer}
     <div class="cells" role="group" aria-label="${esc(name)}">${cells}</div>
     ${tlines}
   </div>`;
@@ -267,8 +274,31 @@ function stripHTML(strip, cls, extraStyle = '') {
       style="width:${w}%;height:${h}%;left:0;top:${t}%;--run:${run}%"></span>`;
 }
 
-/** The hurricane, looping. Sits over a cell inside the storm's eye. */
-export const stormHTML = () => stripHTML(STORM, 'storm-anim');
+/**
+ * Place one full-size hurricane over the authoritative storm centre. The plot clips the
+ * part that is still off-board while the footprint crosses an edge.
+ */
+function stormOverlayHTML(storm, grid) {
+  const cells = Array.isArray(storm) ? storm : storm?.cells;
+  if (!Array.isArray(cells) || !cells.length || !Number.isInteger(grid) || grid < 1) return '';
+
+  const supplied = Array.isArray(storm) ? null : storm?.center;
+  const xs = cells.map((c) => c % grid);
+  const ys = cells.map((c) => Math.floor(c / grid));
+  const center = {
+    x: Number.isFinite(supplied?.x) ? supplied.x : Math.round((Math.min(...xs) + Math.max(...xs)) / 2),
+    y: Number.isFinite(supplied?.y) ? supplied.y : Math.round((Math.min(...ys) + Math.max(...ys)) / 2),
+  };
+  const reach = (HURRICANE_BAND - 1) / 2;
+  const left = ((center.x - reach) * 100) / grid;
+  const top = ((center.y - reach) * 100) / grid;
+  const side = (HURRICANE_BAND * 100) / grid;
+  const style = `inset:auto;left:${left}%;top:${top}%;width:${side}%;height:${side}%;`;
+  return `<div class="storm-layer" aria-hidden="true">${stormHTML(style)}</div>`;
+}
+
+/** The hurricane sprite strip, scaled by its overlay to cover the whole 3×3 eye. */
+export const stormHTML = (style = '') => stripHTML(STORM, 'storm-anim', style);
 
 /** One-shot explosion, sized larger than a cell so the blast overspills it. */
 export const boomHTML = () => stripHTML(BOOM, 'boom-anim');

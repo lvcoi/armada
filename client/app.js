@@ -199,6 +199,17 @@ function applyState(msg) {
   const prev = ui.state;
   ui.state = msg;
 
+  // A storm relocates ships and wipes some shot marks, so any half-aimed action is stale.
+  // The server also blocks actions during the crossing; clearing them here keeps the UI
+  // from offering a shot that can only be rejected.
+  if (msg.storm?.phase === 'active' && prev?.storm?.phase !== 'active') {
+    ui.target = null;
+    ui.arming = false;
+    ui.usingItem = null;
+    ui.picks = [];
+    ui.anchor = null;
+  }
+
   // A stale token (server restarted, or a finished game) means we are not in this room.
   if (ui.you && !msg.players.some((p) => p.id === ui.you.id)) {
     ui.you = null;
@@ -591,10 +602,11 @@ function battleScreen() {
   const viewing = s.players.find((p) => p.id === ui.tab) ?? my;
   const viewingSelf = viewing.id === ui.you.id;
   const turnName = s.players.find((p) => p.id === s.turn.playerId)?.name ?? '';
+  const storming = s.storm?.phase === 'active';
 
-  const canFire = isMyTurn() && !my.eliminated && !viewingSelf && !viewing.eliminated;
+  const canFire = !storming && isMyTurn() && !my.eliminated && !viewingSelf && !viewing.eliminated;
   // Off-turn, a live opponent's board becomes the premove queue surface.
-  const canQueue = !isMyTurn() && !my.eliminated && !viewingSelf && !viewing.eliminated;
+  const canQueue = !storming && !isMyTurn() && !my.eliminated && !viewingSelf && !viewing.eliminated;
 
   // 1-based firing order for queue badges on the board being viewed.
   const pmMap = new Map();
@@ -658,6 +670,8 @@ function battleScreen() {
 
   const sheet = my.eliminated
     ? `<div class="sheet"><p class="center dim">You're out — enjoy the show.</p></div>`
+    : storming
+      ? '<div class="sheet"><p class="center dim">The hurricane is crossing the fleet — turns resume when it passes.</p></div>'
     : ui.arming
       ? armedSheet
       : !isMyTurn()
@@ -698,9 +712,9 @@ function battleScreen() {
   const lastShot = last && last.targetId === viewing.id ? last.cell : null;
   const swap = ui.swapDir ? ` swap-${ui.swapDir}` : '';
 
-  return `${topbar(isMyTurn() ? 'Your turn' : `${esc(turnName)}'s turn`,
+  return `${topbar(storming ? 'Hurricane crossing' : isMyTurn() ? 'Your turn' : `${esc(turnName)}'s turn`,
       viewingSelf ? 'Your waters' : `${esc(viewing.name)}'s waters`,
-      s.turn.deadlineAt)}
+      storming ? null : s.turn.deadlineAt)}
     <main>
       ${stormHTML()}
       ${tabsHTML()}
@@ -715,7 +729,7 @@ function battleScreen() {
           premoves: pmMap.size ? pmMap : null,
           lastShot,
           scan: scan.size ? scan : null,
-          storm: s.storm?.phase === 'active' ? s.storm.cells : null,
+          storm: storming ? s.storm : null,
           selfDamage: viewingSelf ? (my.selfDamage ?? []) : null,
           aim: ui.arming && !viewingSelf ? aimCells(power, viewing) : null,
           name: viewingSelf ? 'Your waters' : `${viewing.name}'s waters`,
@@ -891,6 +905,7 @@ function onCell(cell) {
   }
 
   if (s.phase === PHASE.PLAYING) {
+    if (s.storm?.phase === 'active') return toast('The hurricane is crossing — wait for it to pass');
     const viewing = s.players.find((p) => p.id === ui.tab);
     if (me().eliminated) return;
     if (!viewing || viewing.id === ui.you.id) return toast('Pick an opponent to attack');
@@ -1078,6 +1093,7 @@ function onAction(act, el) {
       break;
     }
     case 'fire':
+      if (s?.storm?.phase === 'active') break;
       if (!ui.target) break;
       net.send({
         t: MSG.FIRE,
@@ -1111,6 +1127,7 @@ function onAction(act, el) {
       ui.usingItem = null;
       break;
     case 'power-fire': {
+      if (s?.storm?.phase === 'active') break;
       const power = byCountry(me()?.country)?.power;
       if (!power || !ui.tab) break;
       net.send({

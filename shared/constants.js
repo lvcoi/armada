@@ -120,7 +120,7 @@ export const RADAR_RADIUS = 1; // 1 -> a 3x3 patch
 
 /**
  * The storm. It is announced HURRICANE_WARNING_ROUNDS full rounds before landfall,
- * then a vertical band walks west to east, scattering every ship it touches.
+ * then one 3×3 eye makes a single continuous crossing, scattering every ship it touches.
  */
 export const HURRICANE_WARNING_ROUNDS = 3;
 export const HURRICANE_BAND = 3;          // the eye is BAND x BAND squares

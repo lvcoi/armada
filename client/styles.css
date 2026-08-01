@@ -479,6 +479,12 @@ main {
 .strip .sprite { will-change: transform; }
 
 /* The storm's eye, drawn on every board so nobody is surprised by their fleet moving. */
+.storm-layer {
+  overflow: hidden;
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 3;
+}
 .strip.storm-anim { inset: 0; z-index: 3; }
 .strip.boom-anim { inset: 0; z-index: 8; }
 

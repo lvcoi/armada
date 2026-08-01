@@ -488,6 +488,44 @@ test('your queue is private: never projected to other players', () => {
     "Ann's battle plan must never reach Ben's phone");
 });
 
+test('the hurricane crosses once, pauses the next turn, and stays out of the combat log', () => {
+  const { room, clock, events, a, c } = threePlayerGame();
+
+  // Rounds 4–6 are the warning. Landfall happens on the next wrap, when the turn would
+  // otherwise move from Cal back to Ann.
+  for (let i = 0; i < 6; i++) room.endOfRound();
+  room.turn.pos = room.seating.indexOf(c.id);
+
+  const turnEventsBefore = events.filter((e) => e.t === MSG.TURN).length;
+  const logBefore = room.log.length;
+  room.advanceTurn();
+
+  assert.equal(room.stormActive, true, 'landfall starts one active crossing');
+  assert.equal(room.currentPlayerId(), a.id, 'the next seat is selected before the pause');
+  assert.equal(room.turn.deadlineAt, null, 'the next turn has no timer during the crossing');
+  assert.equal(events.filter((e) => e.t === MSG.TURN).length, turnEventsBefore,
+    'landfall does not emit a premature back-to-back turn');
+  assert.equal(room.log.length, logBefore, 'landfall does not add a combat-log entry');
+
+  // The fake clock runs all scheduled sweep steps. The server should announce exactly one
+  // post-storm turn after the crossing, then later round wraps must not restart it.
+  clock.advance(30_000);
+  const activeEvents = events.filter((e) => e.t === MSG.HURRICANE && e.phase === 'active');
+  assert.equal(room.stormActive, false, 'the crossing finishes');
+  assert.equal(room.stormPhase.phase, 'passed');
+  assert.equal(activeEvents.length, room.stormTrack.length, 'each track step runs once');
+  assert.equal(room.log.length, logBefore, 'storm steps stay out of the combat log');
+  assert.equal(events.filter((e) => e.t === MSG.TURN).length, turnEventsBefore + 1,
+    'one turn resumes after the storm');
+
+  room.endOfRound();
+  const activeBeforeLateRound = activeEvents.length;
+  clock.advance(30_000);
+  assert.equal(events.filter((e) => e.t === MSG.HURRICANE && e.phase === 'active').length,
+    activeBeforeLateRound, 'a later round cannot start a second crossing');
+  assert.equal(room.log.length, logBefore, 'later storm state never changes the combat log');
+});
+
 test('board size scales with the player count', () => {
   // Two players: close-quarters 10x10.
   const two = harness();

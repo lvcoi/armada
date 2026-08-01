@@ -31,6 +31,20 @@ const HOSTILE = '"><img src=x>';
 const NAMES = ['Ann', 'Ben', HOSTILE];
 
 const log = (...a) => console.log('  ', ...a);
+
+/**
+ * Poll until `fn` reports true. Every state change here arrives over a websocket and
+ * is painted on a rAF, so a fixed sleep is a coin flip — this waits for the thing
+ * itself instead of guessing how long it takes.
+ */
+async function until(fn, { timeout = 6000, step = 120 } = {}) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    if (await fn()) return true;
+    if (Date.now() > deadline) return false;
+    await new Promise((r) => setTimeout(r, step));
+  }
+}
 const fails = [];
 const check = (cond, what) => {
   if (cond) log('PASS', what);
@@ -256,13 +270,16 @@ if (active) {
 
   // Cycle turns; when the queue owner's turn arrives, the shot must fire on its own.
   let autoFired = false;
-  for (let i = 0; i < 6 && !autoFired; i++) {
+  for (let i = 0; i < 10 && !autoFired; i++) {
     const now = await whoseTurn();
-    if (!now) break;
+    if (!now) { await new Promise((r) => setTimeout(r, 200)); continue; }
     if (now === idle) {
-      await idle.page.waitForTimeout(PREMOVE_DELAY_MS + 700);
-      const left = await idle.page.$$eval('.cell.queued', (els) => els.length);
-      autoFired = left < 2; // one consumed by a miss, or the whole queue cleared by a hit
+      // One queued shot is consumed by a miss, or the whole queue by a hit. Poll for
+      // it rather than assuming the delay plus a guess is enough.
+      autoFired = await until(
+        async () => (await idle.page.$$eval('.cell.queued', (els) => els.length)) < 2,
+        { timeout: PREMOVE_DELAY_MS + 4000 },
+      );
     } else {
       await takeTurn(now, 1);
     }
@@ -275,9 +292,10 @@ if (active) {
   let holder = null;
   let collectedKind = null;
   // Boards carry ~1 pickup per 6 water cells, so this lands quickly. Bounded anyway.
-  for (let i = 0; i < 90 && !holder; i++) {
+  for (let i = 0; i < 160 && !holder; i++) {
     const p = await whoseTurn();
-    if (!p) break;
+    // The turn can be mid-flight between players; wait rather than give up.
+    if (!p) { await new Promise((r) => setTimeout(r, 200)); continue; }
     await takeTurn(p, 1 + (i % 2));
     for (const q of pages) {
       const chips = await q.page.$$eval('.item', (els) =>
@@ -314,11 +332,12 @@ if (active) {
         `${holder.name}'s turn came round and the item is enabled (turn=${mine}, enabled=${enabled})`);
 
       if (mine && enabled) {
-        const before = await holder.page.$$eval(`[data-item="${spendable.item}"] .ic`, (e) => e[0]?.textContent ?? '');
+        const read = () => holder.page.$$eval(`[data-item="${spendable.item}"] .ic`,
+          (e) => e[0]?.textContent ?? 'gone');
+        const before = await read();
         await holder.page.click(`[data-item="${spendable.item}"]`);
-        await holder.page.waitForTimeout(600);
-        const after = await holder.page.$$eval(`[data-item="${spendable.item}"] .ic`, (e) => e[0]?.textContent ?? 'gone');
-        check(before !== after, `spending "${spendable.item}" changed the tray (${before} -> ${after})`);
+        const changed = await until(async () => (await read()) !== before);
+        check(changed, `spending "${spendable.item}" changed the tray (${before} -> ${await read()})`);
       }
     }
   }

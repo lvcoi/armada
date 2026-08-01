@@ -63,6 +63,12 @@ export class Room {
     this._turnTimer = null;
     this._placementTimer = null;
     this._premoveTimer = null;
+    this._stormTimer = null;
+    this.roundsPlayed = 0;
+    this.stormPhase = null;
+    this.stormActive = false;
+    this.stormStarted = false;
+    this.stormStep = 0;
   }
 
   // ---------------------------------------------------------------- helpers
@@ -183,7 +189,9 @@ export class Room {
     this.roundsPlayed = 0;
     this.stormPhase = null;
     this.stormActive = false;
+    this.stormStarted = false;
     this.stormStep = 0;
+    this._stormTimer = null;
     // The storm's track is rolled once, at the start, so every board is churned by the
     // same wandering path rather than each getting its own weather.
     this.stormTrack = hurricanePath(this.grid, this.rng);
@@ -503,6 +511,8 @@ export class Room {
   }
 
   advanceTurn() {
+    if (this.stormActive) return;
+
     // Walk the fixed seating order, skipping anyone knocked out. Because seating never
     // changes, eliminating a player can't shift indices and skip somebody's turn.
     for (let step = 1; step <= this.seating.length; step++) {
@@ -511,8 +521,20 @@ export class Room {
       if (p && !p.eliminated) {
         // Wrapping past the end of the seating order is one full round played, which
         // is the clock the storm runs on.
-        if (pos <= this.turn.pos) this.endOfRound();
+        const from = this.turn.pos;
+        const wrapped = pos <= from;
         this.turn.pos = pos;
+        if (wrapped) this.endOfRound();
+        // Landfall pauses this newly selected turn. runStorm() announces it only after
+        // the crossing has finished, so no timer, premove, or duplicate turn can sneak in.
+        if (this.stormActive) {
+          this.turn.deadlineAt = null;
+          this.clearTimeout(this._turnTimer);
+          this._turnTimer = null;
+          this.clearTimeout(this._premoveTimer);
+          this._premoveTimer = null;
+          return;
+        }
         this.armTurnTimer();
         this.armPremove();
         this.bus.event({ t: MSG.TURN, playerId: p.id, deadlineAt: this.turn.deadlineAt });
@@ -524,7 +546,7 @@ export class Room {
   }
 
   onTurnTimeout() {
-    if (this.phase !== PHASE.PLAYING) return;
+    if (this.phase !== PHASE.PLAYING || this.stormActive) return;
     const attacker = this.currentPlayer();
     if (!attacker) return;
 
@@ -719,6 +741,10 @@ export class Room {
     if (this.phase !== PHASE.PLAYING) return;
     this.roundsPlayed += 1;
 
+    // The track is a one-shot event. Later round wraps still count for game state, but
+    // they must never restart the sweep or emit another set of storm mutations.
+    if (this.stormStarted) return;
+
     const state = hurricaneState(this.roundsPlayed, this.stormTrack);
     this.stormPhase = state;
     if (!state) return;
@@ -737,7 +763,8 @@ export class Room {
    * duration. Every step is broadcast so each phone can draw the eye where it is.
    */
   runStorm() {
-    if (this.stormActive) return;
+    if (this.stormActive || this.stormStarted) return;
+    this.stormStarted = true;
     this.stormActive = true;
     this.stormStep = 0;
 
@@ -751,15 +778,22 @@ export class Room {
     const steps = this.stormTrack.length;
     const gap = Math.max(120, Math.round(HURRICANE_SWEEP_MS / Math.max(1, steps)));
     const tick = () => {
-      if (this.phase !== PHASE.PLAYING) { this.stormActive = false; return; }
+      if (this.phase !== PHASE.PLAYING) {
+        this.stormActive = false;
+        this._stormTimer = null;
+        return;
+      }
       const st = hurricaneState(HURRICANE_START_ROUND + HURRICANE_WARNING_ROUNDS + this.stormStep, this.stormTrack);
       if (!st || st.phase !== 'active') {
         // Out the far side: hand the game back.
         this.stormActive = false;
         this.stormPhase = { phase: 'passed' };
+        this._stormTimer = null;
         this.bus.event({ t: MSG.HURRICANE, phase: 'passed' });
         this.armTurnTimer();
         this.armPremove();
+        const next = this.currentPlayer();
+        if (next) this.bus.event({ t: MSG.TURN, playerId: next.id, deadlineAt: this.turn.deadlineAt });
         this.touch();
         return;
       }
@@ -802,9 +836,6 @@ export class Room {
       moved,
       cleared,
       rehidden,
-    });
-    this.log.push({
-      hurricane: true, cells: state.cells, moved, cleared, rehidden, at: this.now(),
     });
     this.touch();
   }
@@ -861,7 +892,7 @@ export class Room {
   armPremove() {
     this.clearTimeout(this._premoveTimer);
     this._premoveTimer = null;
-    if (this.phase !== PHASE.PLAYING) return;
+    if (this.phase !== PHASE.PLAYING || this.stormActive) return;
     const current = this.currentPlayer();
     if (!current || !current.premoves.length) return;
     this._premoveTimer = this.setTimeout(() => this.firePremove(current.id), PREMOVE_DELAY_MS);
@@ -905,9 +936,11 @@ export class Room {
     this.clearTimeout(this._turnTimer);
     this.clearTimeout(this._placementTimer);
     this.clearTimeout(this._premoveTimer);
+    this.clearTimeout(this._stormTimer);
     this._turnTimer = null;
     this._placementTimer = null;
     this._premoveTimer = null;
+    this._stormTimer = null;
 
     this.phase = PHASE.LOBBY;
     this.terrainId = null;
@@ -942,6 +975,9 @@ export class Room {
     }
     this.roundsPlayed = 0;
     this.stormPhase = null;
+    this.stormActive = false;
+    this.stormStarted = false;
+    this.stormStep = 0;
 
     this.touch();
   }

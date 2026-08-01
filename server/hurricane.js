@@ -3,8 +3,8 @@
 // and "what does it do to one board".
 //
 // Once a game a hurricane crosses EVERY player's board: a 3x3 eye that blows in off a
-// random edge and wanders to the far side, one square per round. Any ship it touches is
-// picked up and dropped somewhere else legal, keeping its damage, and every shot mark
+// random edge and wanders to the far side in one continuous sweep. Any ship it touches
+// is picked up and dropped somewhere else legal, keeping its damage, and every shot mark
 // under it is wiped. That wipe is the point: a scattered ship goes invisible again, so
 // the storm resets everyone's intel instead of just shuffling wood.
 //

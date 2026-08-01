@@ -237,7 +237,7 @@ function drawMine(r) {
   // light on its lower right — without it a near-black ball on near-black water is a
   // hole rather than an object.
   r.ellipse(cx, cy, rad, rad, '#40525f');
-  r.ellipse(cx - 0.6, cy - 0.8, rad - 0.9, rad - 0.9, '#101922');
+  r.ellipse(cx - 1.0, cy - 1.1, rad - 0.8, rad - 0.8, '#101922');
   r.ellipse(cx - 1.4, cy - 1.8, rad - 2.6, rad - 2.6, '#243039');
   r.ellipse(cx - 2.6, cy - 3.1, rad - 4.8, rad - 4.8, '#3d4f5d');
   r.ellipse(cx - 3.5, cy - 3.9, 1.7, 1.5, '#93abbb');
@@ -271,11 +271,13 @@ function drawRadar(r) {
   // across the wedge is what makes one still frame read as something rotating.
   const D = Math.PI / 180;
   const lead = -26 * D;
-  wedge(r, cx, cy, 11, -128 * D, lead, '#0c536e');
-  wedge(r, cx, cy, 11, -96 * D, lead, '#127a9c');
-  wedge(r, cx, cy, 11, -68 * D, lead, '#2495bb');
-  wedge(r, cx, cy, 11, -44 * D, lead, '#63cfef');
-  wedge(r, cx, cy, 11, -30 * D, lead, '#b6efff');
+  // Wedge spans are deliberately wide at the bright end: a 4deg sliver of near-white is
+  // sub-pixel once the icon is resampled to 22, and the sweep loses its head.
+  wedge(r, cx, cy, 11, -130 * D, lead, '#0c536e');
+  wedge(r, cx, cy, 11, -104 * D, lead, '#127a9c');
+  wedge(r, cx, cy, 11, -80 * D, lead, '#2495bb');
+  wedge(r, cx, cy, 11, -56 * D, lead, '#63cfef');
+  wedge(r, cx, cy, 11, -36 * D, lead, '#b6efff');
   r.line(cx, cy, cx + Math.cos(lead) * 11.2, cy + Math.sin(lead) * 11.2, '#eafcff');
 
   // Contact blip, in phosphor green — the game's own radar colour, and the only
@@ -349,9 +351,12 @@ function drawRepair(r) {
   const ca = Math.SQRT1_2; // cos(-45)
   const sa = -Math.SQRT1_2; // sin(-45)
 
+  // Sized up to the limit the 45deg diagonal allows: at 22px the shaft is only about
+  // 2px across, so every tenth of a pixel of beam here is the difference between a
+  // wrench and a green squiggle.
   const HEADS = [
-    { uh: 9.0, hu: 4.9, hv: 5.4, jaw: 2.5, dir: 1 },
-    { uh: -9.2, hu: 4.1, hv: 4.5, jaw: 2.0, dir: -1 },
+    { uh: 8.8, hu: 5.1, hv: 5.9, jaw: 2.6, dir: 1 },
+    { uh: -9.0, hu: 4.6, hv: 5.2, jaw: 2.4, dir: -1 },
   ];
 
   const inside = new Uint8Array(ICON_BASE * ICON_BASE);
@@ -362,7 +367,7 @@ function drawRepair(r) {
       const u = dx * ca + dy * sa;
       const v = -dx * sa + dy * ca;
 
-      let solid = Math.abs(u) <= 9.6 && Math.abs(v) <= 2.9;
+      let solid = Math.abs(u) <= 9.4 && Math.abs(v) <= 3.3;
       let cut = false;
       for (const h of HEADS) {
         const du = Math.abs((u - h.uh) / h.hu);
@@ -370,7 +375,10 @@ function drawRepair(r) {
         // Superellipse: a circle head looks like a lollipop, a rectangle looks like a
         // spanner from a flat-pack diagram. 2.6 lands between the two.
         if (du ** 2.6 + dv ** 2.6 <= 1) solid = true;
-        const past = h.dir > 0 ? u - h.uh > -0.5 : u - h.uh < 0.5;
+        // The jaw may only bite into the part of the head that sticks out past the end
+        // of the shaft. Let it start any further in and it shaves the shaft down to a
+        // sliver, which snaps the head clean off the tool.
+        const past = h.dir > 0 ? u > 9.4 : u < -9.4;
         if (past && Math.abs(v) <= h.jaw) cut = true;
       }
       if (solid && !cut) inside[y * ICON_BASE + x] = 1;
@@ -402,7 +410,7 @@ function drawRepair(r) {
       const dy = y + 0.5 - cy;
       const u = dx * ca + dy * sa;
       const v = -dx * sa + dy * ca;
-      if (Math.abs(u) < 9.2 && v > -1.6 && v < 0.4 && at(x, y - 1) && at(x, y + 1)) {
+      if (Math.abs(u) < 9.0 && v > -1.9 && v < 0.4 && at(x, y - 1) && at(x, y + 1)) {
         r.set(x, y, GOOD);
       }
     }
@@ -499,15 +507,15 @@ const STORM_N2 = valueNoise(19, 0x9c10ed42);
 
 // Radii in 32px board-cell units, measured from the centre of the tile.
 const EYE_R = 3.0; // clear air inside the eye
-const WALL_R = 5.2; // outside of the eye wall, before the spiral hook is added
-const CDO_R = 10.0; // outside of the solid central overcast
+const WALL_R = 5.4; // outside of the eye wall, before the spiral hook is added
+const CDO_R = 11.0; // outside of the solid central overcast
 const ARM_R = 21.5; // where the last wisp of the outer rainbands dies
 const TWIST = 3.0; // spiral tightness; higher wraps the arms further per turn
 
 // Five posterised cloud steps, dimmest first. Alpha stays inside the window the board
 // can still be read through; only the eye wall goes near-opaque.
-const CLOUD = ['#6f92a8', '#93b4c8', '#bcd6e5', '#e6f3fa', '#ffffff'];
-const CLOUD_A = [0.42, 0.53, 0.62, 0.69, 0.75];
+const CLOUD = ['#7396ac', '#96b7ca', '#bed8e6', '#e6f3fa', '#ffffff'];
+const CLOUD_A = [0.55, 0.61, 0.66, 0.71, 0.75];
 
 /**
  * The hurricane as a field in fixed source space. Returns [hex, alpha] or null for
@@ -544,13 +552,20 @@ function stormSample(sx, sy) {
   const n = STORM_N1(sx / 52 + 0.5, sy / 52 + 0.5) * 0.72
     + STORM_N2(sx / 52 + 0.5, sy / 52 + 0.5) * 0.28;
 
-  // Central dense overcast: nearly solid, only lightly modulated by the arms.
-  const cdo = clamp((CDO_R - rr) / 4.2, 0, 1);
-  // Rainbands: raised to a power so the gaps between them open up wide.
-  const fall = clamp((ARM_R - rr) / 11.0, 0, 1);
-  const bands = fall * Math.pow(arm, 1.45);
+  // Central dense overcast: near-solid cloud packed around the wall. The square root
+  // keeps it dense right out to its edge — a linear ramp reads as haze, not as storm.
+  const cdo = Math.sqrt(clamp((CDO_R - rr) / 3.4, 0, 1)) * (0.80 + 0.20 * arm);
 
-  let d = Math.max(cdo * (0.74 + 0.26 * arm), bands) + 0.11 * (n - 0.5);
+  // Rainbands. Width is set by a hard floor on the arm value rather than by a power
+  // curve: that keeps the arms broad, the lanes between them genuinely empty, and the
+  // whole band thinning as it runs out to the edge of the tile.
+  const fall = clamp((ARM_R - rr) / 10.0, 0, 1);
+  const wide = clamp((arm - 0.22) / 0.62, 0, 1);
+  // Lumps along the length of each arm, so the spiral is weather and not a logo.
+  const lump = 0.80 + 0.20 * Math.cos(phase * 2.5 + rr * 0.6);
+  const bands = fall * Math.pow(wide, 0.7) * lump;
+
+  let d = Math.max(cdo, bands) + 0.13 * (n - 0.5);
   if (d < 0.26) return null;
 
   d = clamp(d, 0, 1);
@@ -648,7 +663,7 @@ const BOOM_F = [
 ];
 
 const EMBER_A = [0, 0.35, 0.9, 1.0, 1.0, 0.9, 0.62, 0.32];
-const SHOCK_A = [0, 0.5, 0.34, 0.18, 0, 0, 0, 0];
+const SHOCK_A = [0, 0.34, 0.18, 0, 0, 0, 0, 0];
 
 /**
  * One shell of the burst: a central blob plus its ring of lobes, all one flat colour.
@@ -717,7 +732,7 @@ export function drawBoom(frame, SIZE) {
   // the animation read as debris rather than as a dissolve.
   if (SHOCK_A[n] > 0) {
     for (const a0 of [-0.35, 1.9, 3.9]) {
-      arc(r, c, c, f.R * 1.28 * s, Math.max(1, 1.4 * s), a0 + spin, a0 + spin + 1.15,
+      arc(r, c, c, f.R * 1.16 * s, Math.max(1, 1.4 * s), a0 + spin, a0 + spin + 1.0,
         '#ffe9a8', SHOCK_A[n]);
     }
   }
