@@ -77,9 +77,9 @@ swipe a line across — an opponent's waters to **queue up to 8 shots**. They sh
 numbered in firing order.
 
 One queued shot fires automatically at the start of each of your turns, marked `[AUTO]`
-in the combat log. **The moment one of them hits, the rest of the queue is thrown away**
-and you're back to aiming by hand — a hit is worth thinking about, so the game gives the
-turn back to you.
+in the combat log. Landing a hit does **not** stop the queue — you keep raking. What
+scraps your plan is **taking** damage: the moment somebody hits you, your queue is
+thrown away so you can react to being shot.
 
 Tap a queued square again (or its chip in the bottom bar) to drop it, or *Clear* to
 scrap the whole plan. Firing manually on your turn cancels that turn's queued shot but
@@ -99,6 +99,47 @@ shots with their own outcomes. Shooting G7 at Mom twice is not allowed.
 
 Carrier (5), Battleship (4), Cruiser (3), Submarine (3), Destroyer (2) — each player
 gets one of each.
+
+### Navies and superpowers
+
+Pick a country in the lobby. Every navy gets the **same total firepower — 18 squares over
+the whole game** — and differs only in the shape it arrives in, so the choice is style,
+not strength.
+
+| Navy | Strike | Squares | Times |
+|---|---|---|---|
+| USA | 3×3 block | 9 | 2 |
+| Russia | line of 6 | 6 | 3 |
+| China | 6 scattered in a 3×3 | 6 | 3 |
+| Spain | 3×2 block | 6 | 3 |
+| UK | line of 3 | 3 | 6 |
+| Germany | 3 squares anywhere | 3 | 6 |
+| Iran | 2-square strike | 2 | 9 |
+| Japan | 1 pilot | 1 | 18 |
+
+Japan is the odd one out: you choose how many pilots to send each turn, so all 18 can go
+out at once or be dripped through the game.
+
+### What's hiding in the water
+
+Every board hides its own pickups — about 24 on a 12×12 — revealed only by shooting them.
+The same square can be a mine for one player and open water for another.
+
+- **Mine** — damages one of *your own* ships at random. Nobody else can see which, and it
+  never appears on the public board, but the log says you struck one.
+- **Radar** — shows you ships, mines and pickups in the 3×3 around the square you hit.
+- **Spare shell** — fire again immediately.
+- **Repair crew** — heals one hit on your fleet.
+- **Supply crate** — one more superpower strike.
+
+### The hurricane
+
+Around round four a storm is announced, and a few rounds later a **3×3 eye wanders across
+every board on a random track**, drawn so you can watch it coming. Ships caught in it are
+picked up and dropped somewhere else — you don't choose where. They keep their damage,
+but every shot marked in the eye is wiped, so a scattered ship effectively goes invisible
+again. Mines and pickups get dragged along too, which means a minefield you'd mapped
+stops being safe.
 
 ### Timers
 
