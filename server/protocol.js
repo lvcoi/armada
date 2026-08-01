@@ -54,6 +54,9 @@ export function dispatch(room, playerId, msg) {
     case MSG.PREMOVE_SET:
       return room.setPremoves(playerId, msg.premoves);
 
+    case MSG.COUNTRY_SET:
+      return room.setCountry(playerId, msg.country);
+
     default:
       throw new GameError(ERR.BAD_MESSAGE, `Unknown message: ${msg.t}`);
   }

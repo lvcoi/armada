@@ -63,6 +63,42 @@ export const DISCONNECT_GRACE_MS = 90_000;
 export const MAX_PREMOVES = 8;
 export const PREMOVE_DELAY_MS = 700;
 
+/**
+ * Hidden pickups scattered over open water at the start of a game. They are revealed
+ * only by being shot at, and only ever to the people entitled to know: a mine's damage
+ * is private to the player who set it off, everything else is private to whoever found
+ * it. Every one of them still writes a line to the public combat log.
+ */
+export const POWERUP = {
+  MINE: 'mine',          // 1 hit on a random ship of YOURS; nobody else sees which
+  RADAR: 'radar',        // reveals a 3x3 patch of the defender's board, to you only
+  EXTRA: 'extra',        // fire again immediately
+  REPAIR: 'repair',      // heals one hit on one of your own ships
+  RECHARGE: 'recharge',  // one more use of your country's superpower
+};
+
+/** Draw weights — mines are the common one, so the board stays genuinely risky. */
+export const POWERUP_WEIGHTS = [
+  [POWERUP.MINE, 5],
+  [POWERUP.RADAR, 3],
+  [POWERUP.EXTRA, 3],
+  [POWERUP.REPAIR, 3],
+  [POWERUP.RECHARGE, 2],
+];
+
+/** Roughly one pickup per 18 water cells, so a 12x12 board carries about 7. */
+export const POWERUP_DENSITY = 1 / 18;
+export const RADAR_RADIUS = 1; // 1 -> a 3x3 patch
+
+/**
+ * The storm. It is announced HURRICANE_WARNING_ROUNDS full rounds before landfall,
+ * then a vertical band walks west to east, scattering every ship it touches.
+ */
+export const HURRICANE_WARNING_ROUNDS = 3;
+export const HURRICANE_BAND = 3;          // columns wide
+export const HURRICANE_STEP = 3;          // columns advanced per round once it lands
+export const HURRICANE_START_ROUND = 4;   // rounds played before the warning appears
+
 export function timerLabel(ms) {
   if (ms == null) return 'No limit';
   const s = Math.round(ms / 1000);
@@ -86,6 +122,10 @@ export const MSG = {
   PLACE_CONFIRM: 'place/confirm',
   FIRE: 'fire',
   PREMOVE_SET: 'premove/set',
+  COUNTRY_SET: 'country/set',
+  POWER_FIRE: 'power/fire',
+  POWERUP_FOUND: 'powerup/found',
+  HURRICANE: 'hurricane',
   PING: 'ping',
   // server -> client
   WELCOME: 'welcome',

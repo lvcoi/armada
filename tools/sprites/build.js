@@ -13,7 +13,9 @@ import { Raster } from './raster.js';
 import { encodePNG } from './png.js';
 import { drawShip } from './ships.js';
 import { drawIsland } from './islands.js';
+import { drawFlag } from './flags.js';
 import { FLEET } from '../../shared/constants.js';
+import { COUNTRY_IDS } from '../../shared/countries.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT = path.resolve(HERE, '../../client');
@@ -53,13 +55,26 @@ for (let mask = 0; mask < ISLAND_COUNT; mask++) {
   islands.push({ mask, art, x: mask * TILE, y: islandY });
 }
 
-const SHEET_H = islandY + TILE;
+// Flags get their own row too. They are 3:2, so eight of them fit a 512 sheet exactly.
+const FLAG_W = TILE * 1.5;
+const flagY = islandY + TILE;
+const flags = COUNTRY_IDS.map((id, i) => {
+  const art = drawFlag(id, TILE);
+  if (art.w !== FLAG_W || art.h !== TILE) {
+    throw new Error(`flag ${id}: expected ${FLAG_W}x${TILE}, got ${art.w}x${art.h}`);
+  }
+  return { id, art, x: i * FLAG_W, y: flagY };
+});
+if (flags.length * FLAG_W > SHEET_W) throw new Error('flag row overflows the sheet');
+
+const SHEET_H = flagY + TILE;
 
 // ---------------------------------------------------------------- compose
 
 const sheet = new Raster(SHEET_W, SHEET_H);
 for (const s of placed) sheet.blit(s.art, s.x, s.y);
 for (const i of islands) sheet.blit(i.art, i.x, i.y);
+for (const f of flags) sheet.blit(f.art, f.x, f.y);
 
 const png = encodePNG(SHEET_W, SHEET_H, sheet.data);
 fs.writeFileSync(path.join(CLIENT, 'sprites.png'), png);
@@ -80,9 +95,15 @@ ${placed.map((s) => `  ${s.type}: { x: ${s.x}, y: ${s.y}, w: ${s.art.w}, h: ${s.
 /** 16 island autotiles in one row, indexed by neighbour mask N=1 E=2 S=4 W=8. */
 export const ISLAND_Y = ${islandY};
 export const ISLAND_COUNT = ${ISLAND_COUNT};
+
+/** National flags, keyed by country id. */
+export const FLAGS = {
+${flags.map((f) => `  ${f.id}: { x: ${f.x}, y: ${f.y}, w: ${f.art.w}, h: ${f.art.h} },`).join('\n')}
+};
 `;
 fs.writeFileSync(path.join(CLIENT, 'sprite-map.js'), manifest);
 
 console.log(`sprites.png  ${SHEET_W}x${SHEET_H}  (${(png.length / 1024).toFixed(1)} KB)`);
 for (const s of placed) console.log(`  ${s.type.padEnd(11)} ${s.art.w}x${s.art.h} @ ${s.x},${s.y}`);
 console.log(`  islands     ${ISLAND_COUNT} tiles @ 0,${islandY}`);
+console.log(`  flags       ${flags.length} @ 0,${flagY}`);

@@ -12,6 +12,10 @@ function projectPlayer(player, isSelf) {
     id: player.id,
     name: player.name,
     color: player.color,
+    country: player.country,
+    // How many superpower uses are left is public — knowing the US still has its nuke
+    // is exactly the kind of tension that should be on the table.
+    powerUses: player.powerUses ?? 0,
     connected: player.connected,
     ready: player.ready,
     eliminated: player.eliminated,

@@ -3,11 +3,12 @@
 import { randomUUID } from 'node:crypto';
 
 import {
-  PHASE, MSG, ERR, MAX_PLAYERS, MIN_PLAYERS, PLAYER_COLORS, gridFor,
+  PHASE, MSG, ERR, MAX_PLAYERS, MIN_PLAYERS, gridFor,
   TIMER_STOPS, DEFAULT_TURN_LIMIT_MS, DEFAULT_PLACEMENT_LIMIT_MS, DISCONNECT_GRACE_MS,
   MAX_PREMOVES, PREMOVE_DELAY_MS,
 } from '../shared/constants.js';
 import { randomTerrainId, isLand } from '../shared/terrain.js';
+import { COUNTRIES, byCountry } from '../shared/countries.js';
 import { validateFleet, randomFleet, completeFleet } from '../shared/placement.js';
 import { fireAt, fleetSunk, openCells, rejectFire } from './game.js';
 
@@ -93,7 +94,11 @@ export class Room {
       id: `p${this.nextPlayerNum++}`,
       token: randomUUID(),
       name: clean,
-      color: PLAYER_COLORS[this.players.length % PLAYER_COLORS.length],
+      country: this.freeCountry().id,
+      // The country's accent doubles as the player colour, so every existing
+      // colour-coded surface picks up the national identity for free.
+      color: this.freeCountry().accent,
+      powerUses: 0,
       connected: true,
       ready: false,
       eliminated: false,
@@ -166,6 +171,7 @@ export class Room {
     for (const p of this.players) {
       p.incoming = new Uint8Array(this.grid * this.grid);
       p.premoves = [];
+      p.powerUses = byCountry(p.country)?.power.uses ?? 0;
       this.applyFleet(p, randomFleet(this.terrainId, this.grid, this.rng));
       p.ready = false;
     }
@@ -314,6 +320,10 @@ export class Room {
     this.log.push(record);
     this.bus.event({ t: MSG.FIRE_RESULT, ...record });
 
+    // Taking damage is what invalidates a plan, not dealing it. The DEFENDER's queue
+    // is scrapped so they can react to being hit; the attacker's keeps running.
+    if (outcome.result !== 'miss') target.premoves = [];
+
     if (fleetSunk(target)) {
       target.eliminated = true;
       target.premoves = [];
@@ -388,6 +398,28 @@ export class Room {
    * Entries are sanitized here; whether a cell is still fireable is checked again at
    * fire time, because the board keeps changing while shots sit in the queue.
    */
+  // ---------------------------------------------------------------- countries
+
+  /** First navy nobody has claimed — new joiners always land on a free one. */
+  freeCountry() {
+    const taken = new Set(this.players.map((p) => p.country));
+    return COUNTRIES.find((c) => !taken.has(c.id)) ?? COUNTRIES[0];
+  }
+
+  setCountry(playerId, countryId) {
+    const p = this.byId(playerId);
+    if (!p) fail(ERR.BAD_MESSAGE, 'Unknown player');
+    if (this.phase !== PHASE.LOBBY) fail(ERR.WRONG_PHASE, 'Navies are locked once the game starts');
+    const country = byCountry(countryId);
+    if (!country) fail(ERR.BAD_MESSAGE, 'No such navy');
+    if (this.players.some((x) => x.id !== playerId && x.country === country.id)) {
+      fail(ERR.BAD_MESSAGE, `${country.name} is already taken`);
+    }
+    p.country = country.id;
+    p.color = country.accent;
+    this.touch();
+  }
+
   setPremoves(playerId, list) {
     const p = this.byId(playerId);
     if (!p) fail(ERR.BAD_MESSAGE, 'Unknown player');
@@ -438,10 +470,9 @@ export class Room {
       if (!target || target.eliminated) continue;
       if (rejectFire(target, cell, this.terrainId, this.grid)) continue;
 
-      const outcome = this.applyFire(attacker, target, cell, false, true);
-      // The queue exists to rake open water. The moment a shell connects, the rest of
-      // the plan is stale intel — clear it and give the aiming back to the player.
-      if (outcome.result !== 'miss') attacker.premoves = [];
+      // A queued shot that connects does NOT stop the queue — you keep raking. Only
+      // being hit yourself scraps your plan (handled in applyFire).
+      this.applyFire(attacker, target, cell, false, true);
       this.touch();
       return;
     }
@@ -450,9 +481,14 @@ export class Room {
   }
 
   /** "Play again" — back to the lobby with the same people, fresh boards. */
+  /**
+   * Back to the lobby. Allowed from any phase, not just a finished game — somebody
+   * always needs to bail out of a half-set-up game. The client guards it behind a
+   * confirmation, and it stays host-only.
+   */
   resetToLobby(playerId) {
-    if (playerId !== this.hostId) fail(ERR.NOT_HOST, 'Only the host can start a new game');
-    if (this.phase !== PHASE.OVER) fail(ERR.WRONG_PHASE, 'Finish this game first');
+    if (playerId !== this.hostId) fail(ERR.NOT_HOST, 'Only the host can reset the game');
+    if (this.phase === PHASE.LOBBY) return; // already there; nothing to tear down
 
     this.clearTimeout(this._turnTimer);
     this.clearTimeout(this._placementTimer);
@@ -483,6 +519,7 @@ export class Room {
       p.shipAt = new Int8Array(0);
       p.incoming = new Uint8Array(0);
       p.premoves = [];
+      p.powerUses = 0;
       p.lastNonce = null;
     }
 

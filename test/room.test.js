@@ -359,13 +359,13 @@ test('you cannot fire out of turn', () => {
 
 // ---------------------------------------------------------------------- premoves
 
-test('premoves fire automatically, one per turn, until a hit clears the queue', () => {
+test('premoves fire one per turn, and DEALING damage does not stop the queue', () => {
   const { room, clock, events, a, b, c } = threePlayerGame();
 
   room.setPremoves(b.id, [
     { targetId: c.id, cell: at(0, 11) },  // open water on Cal's board -> miss
     { targetId: a.id, cell: at(2, 0) },   // Ann's carrier -> hit
-    { targetId: c.id, cell: at(1, 11) },  // queued behind the hit; must never fire
+    { targetId: c.id, cell: at(1, 11) },  // must SURVIVE the hit above
   ]);
   assert.equal(b.premoves.length, 3);
 
@@ -385,7 +385,8 @@ test('premoves fire automatically, one per turn, until a hit clears the queue', 
   assert.equal(b.premoves.length, 2, 'a miss keeps the rest of the queue');
   assert.equal(room.currentPlayerId(), c.id, 'the turn moved on');
 
-  // A full round later, Ben's next queued shot connects — and wipes the queue.
+  // A full round later Ben's next queued shot CONNECTS — and the queue keeps going,
+  // because hurting someone else is no reason to stop shelling them.
   room.fire(c.id, { targetId: a.id, cell: at(0, 11) });
   room.fire(a.id, { targetId: c.id, cell: at(3, 11) });
   assert.equal(room.currentPlayerId(), b.id);
@@ -394,8 +395,23 @@ test('premoves fire automatically, one per turn, until a hit clears the queue', 
   shots = events.filter((e) => e.t === MSG.FIRE_RESULT);
   assert.equal(shots.at(-1).result, 'hit');
   assert.equal(a.incoming[at(2, 0)], SHOT.HIT);
-  assert.equal(b.premoves.length, 0, 'a hit clears the whole queue');
-  assert.equal(c.incoming[at(1, 11)], SHOT.NONE, 'the shot behind the hit never fires');
+  assert.equal(b.premoves.length, 1, 'landing a hit must NOT clear your own queue');
+});
+
+test('TAKING damage scraps the defender\'s queue, not the attacker\'s', () => {
+  const { room, a, b, c } = threePlayerGame();
+
+  room.setPremoves(b.id, [{ targetId: c.id, cell: at(5, 11) }]);
+  room.setPremoves(c.id, [{ targetId: a.id, cell: at(6, 11) }]);
+  assert.equal(b.premoves.length, 1);
+  assert.equal(c.premoves.length, 1);
+
+  // Ann hits Ben's carrier, which sits vertically at (0,7)-(0,11).
+  room.fire(a.id, { targetId: b.id, cell: at(0, 7) });
+  assert.equal(b.incoming[at(0, 7)], SHOT.HIT);
+
+  assert.equal(b.premoves.length, 0, 'the player who got hit loses their plan');
+  assert.equal(c.premoves.length, 1, 'a bystander keeps theirs');
 });
 
 test('a queued cell someone else has since shot is skipped for the next one', () => {
