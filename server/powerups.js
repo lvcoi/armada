@@ -233,3 +233,50 @@ export function applyEffect(effect, room) {
       return false;
   }
 }
+
+/**
+ * The storm tears loose anything hidden in its path and re-hides it elsewhere.
+ *
+ * It also re-homes any pickup a relocated hull has come to rest on top of. That case
+ * cannot happen at setup — scatterPowerups avoids ship cells — but it happens the
+ * moment the hurricane starts moving ships, and a mine underneath a hull would
+ * detonate on an ordinary hull hit, which reads as a bug rather than a mechanic.
+ *
+ * Mutates `powerups` in place and returns how many were re-hidden.
+ */
+export function rescatterPowerups(
+  powerups, stormCells, terrainId, grid, occupiedByShips, rng = Math.random,
+) {
+  if (!powerups?.size) return 0;
+  const eye = new Set(stormCells ?? []);
+  const ships = occupiedByShips instanceof Set
+    ? occupiedByShips
+    : new Set(occupiedByShips ?? []);
+
+  const displaced = [];
+  for (const [cell, type] of powerups) {
+    if (eye.has(cell) || ships.has(cell)) {
+      displaced.push(type);
+      powerups.delete(cell);
+    }
+  }
+  if (!displaced.length) return 0;
+
+  // Fresh water only: not land, not under a hull, not already hiding something, and
+  // not inside the eye we just pulled them out of.
+  const free = [];
+  for (let c = 0; c < grid * grid; c++) {
+    if (eye.has(c) || ships.has(c) || powerups.has(c)) continue;
+    if (isLand(terrainId, c, grid)) continue;
+    free.push(c);
+  }
+
+  let placed = 0;
+  for (const type of displaced) {
+    if (!free.length) break; // nowhere left to hide it; it is simply lost to the sea
+    const i = Math.floor(rng() * free.length);
+    powerups.set(free.splice(i, 1)[0], type);
+    placed++;
+  }
+  return placed;
+}

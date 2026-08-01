@@ -9,7 +9,9 @@ import {
 } from '../shared/constants.js';
 import { randomTerrainId, isLand } from '../shared/terrain.js';
 import { COUNTRIES, byCountry, powerCells, POWER_BUDGET } from '../shared/countries.js';
-import { scatterPowerups, resolvePowerup, applyEffect } from './powerups.js';
+import {
+  scatterPowerups, resolvePowerup, applyEffect, rescatterPowerups,
+} from './powerups.js';
 import { hurricanePath, hurricaneState, sweepCells } from './hurricane.js';
 import { validateFleet, randomFleet, completeFleet } from '../shared/placement.js';
 import { fireAt, fleetSunk, openCells, rejectFire } from './game.js';
@@ -623,11 +625,19 @@ export class Room {
     const hit = new Set(state.cells);
     let moved = 0;
     let cleared = 0;
+    let rehidden = 0;
     for (const p of this.players) {
       if (p.eliminated) continue;
       const res = sweepCells(p, state.cells, this.grid, this.terrainId, this.rng);
       moved += res.moved;
       cleared += res.cleared;
+      // Mines and pickups are floating too — the storm drags them somewhere new. This
+      // runs AFTER the ships have moved so it can also clear any pickup a relocated
+      // hull has just parked on top of.
+      rehidden += rescatterPowerups(
+        p.powerups, state.cells, this.terrainId, this.grid,
+        new Set(p.ships.flatMap((s) => s.cells)), this.rng,
+      );
       // Ships that moved are no longer where anyone thought they were, so radar intel
       // about this board is stale, and hidden mine damage inside the eye is wiped too.
       p.reveals = [];
@@ -635,10 +645,16 @@ export class Room {
     }
 
     this.bus.event({
-      t: MSG.HURRICANE, phase: 'active', cells: state.cells, center: state.center, moved, cleared,
+      t: MSG.HURRICANE,
+      phase: 'active',
+      cells: state.cells,
+      center: state.center,
+      moved,
+      cleared,
+      rehidden,
     });
     this.log.push({
-      hurricane: true, cells: state.cells, moved, cleared, at: this.now(),
+      hurricane: true, cells: state.cells, moved, cleared, rehidden, at: this.now(),
     });
   }
 

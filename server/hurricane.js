@@ -25,8 +25,14 @@ const LANDFALL_ROUND = HURRICANE_START_ROUND + HURRICANE_WARNING_ROUNDS;
 /** HURRICANE_BAND is the footprint width, so a 3-wide storm reaches 1 cell either side. */
 const REACH = Math.max(0, Math.floor((HURRICANE_BAND - 1) / 2));
 
-/** Odds of a sideways jog each step. High enough that the track visibly meanders. */
-const DRIFT_CHANCE = 0.6;
+/**
+ * Odds of a sideways jog each step, and of the storm swinging the other way. Drift
+ * PERSISTS: re-rolling the direction every step just jitters around the lane it started
+ * in, while holding a heading for a run of steps carves the long curves that actually
+ * read as a path across the map.
+ */
+const DRIFT_CHANCE = 0.75;
+const TURN_CHANCE = 0.2;
 
 /** Headings: [dx, dy] — west->east, east->west, north->south, south->north. */
 const HEADINGS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -64,19 +70,21 @@ export function hurricanePath(grid, rng = Math.random) {
   let y = dy === 0 ? lane : (dy > 0 ? -1 : size);
 
   const path = [];
+  let jog = rng() < 0.5 ? -1 : 1;
+
   for (let step = 0; step < size + 2; step++) {
     path.push({ x, y });
 
     x = clamp(x + dx, -1, size);
     y = clamp(y + dy, -1, size);
 
+    if (rng() < TURN_CHANCE) jog = -jog;
     if (rng() < DRIFT_CHANCE) {
-      const jog = rng() < 0.5 ? -1 : 1;
       const across = dx === 0 ? x : y;
-      const next = across + jog;
-      const bounced = next < lo || next > hi ? across - jog : next;
-      if (dx === 0) x = clamp(bounced, lo, hi);
-      else y = clamp(bounced, lo, hi);
+      if (across + jog < lo || across + jog > hi) jog = -jog; // bounce off the side
+      const next = clamp(across + jog, lo, hi);
+      if (dx === 0) x = next;
+      else y = next;
     }
   }
 
