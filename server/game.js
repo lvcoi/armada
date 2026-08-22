@@ -1,6 +1,6 @@
 // Pure rule functions. No sockets, no timers — everything here is directly testable.
 
-import { SHOT, CELLS } from '../shared/constants.js';
+import { SHOT } from '../shared/constants.js';
 import { isLand } from '../shared/terrain.js';
 
 /**
@@ -38,18 +38,18 @@ export const shipsRemaining = (player) =>
   player.ships.filter((s) => !s.sunk).length;
 
 /** Cells that may still legally be fired at this defender. */
-export function openCells(defender, terrainId) {
+export function openCells(defender, terrainId, grid) {
   const out = [];
-  for (let c = 0; c < CELLS; c++) {
-    if (defender.incoming[c] === SHOT.NONE && !isLand(terrainId, c)) out.push(c);
+  for (let c = 0; c < grid * grid; c++) {
+    if (defender.incoming[c] === SHOT.NONE && !isLand(terrainId, c, grid)) out.push(c);
   }
   return out;
 }
 
 /** Why this shot is illegal, or null if it is fine. */
-export function rejectFire(defender, cell, terrainId) {
-  if (!Number.isInteger(cell) || cell < 0 || cell >= CELLS) return 'bad_cell';
-  if (isLand(terrainId, cell)) return 'cell_is_land';
+export function rejectFire(defender, cell, terrainId, grid) {
+  if (!Number.isInteger(cell) || cell < 0 || cell >= grid * grid) return 'bad_cell';
+  if (isLand(terrainId, cell, grid)) return 'cell_is_land';
   if (defender.incoming[cell] !== SHOT.NONE) return 'already_fired';
   return null;
 }

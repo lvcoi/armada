@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 
 import { Room } from '../server/room.js';
 import { projectState } from '../server/redact.js';
-import { PHASE, MSG, SHOT } from '../shared/constants.js';
+import {
+  PHASE, MSG, SHOT, MAX_PREMOVES, PREMOVE_DELAY_MS,
+} from '../shared/constants.js';
 import { toIndex, label } from '../shared/coords.js';
 
 /** Controllable clock so timer tests run instantly. */
@@ -48,15 +50,40 @@ function harness() {
   return { room, clock, events };
 }
 
-const rowFleet = (col, startRow) => [
-  { type: 'carrier', anchor: toIndex(col, startRow + 0), dir: 'h' },
-  { type: 'battleship', anchor: toIndex(col, startRow + 1), dir: 'h' },
-  { type: 'cruiser', anchor: toIndex(col, startRow + 2), dir: 'h' },
-  { type: 'submarine', anchor: toIndex(col, startRow + 3), dir: 'h' },
-  { type: 'destroyer', anchor: toIndex(col, startRow + 4), dir: 'h' },
+/** Three players play on a 12x12 board. All fixture coordinates below assume it. */
+const G = 12;
+const at = (x, y) => toIndex(x, y, G);
+
+const rowFleet = (col, startRow, g = G) => [
+  { type: 'carrier', anchor: toIndex(col, startRow + 0, g), dir: 'h' },
+  { type: 'battleship', anchor: toIndex(col, startRow + 1, g), dir: 'h' },
+  { type: 'cruiser', anchor: toIndex(col, startRow + 2, g), dir: 'h' },
+  { type: 'submarine', anchor: toIndex(col, startRow + 3, g), dir: 'h' },
+  { type: 'destroyer', anchor: toIndex(col, startRow + 4, g), dir: 'h' },
 ];
 
-/** 3 players on the atoll map with known, non-overlapping fleet positions. */
+/** Ben's fleet: vertical, packed into the bottom-left, clear of the atoll ring. */
+const benFleet = () => [
+  { type: 'carrier', anchor: at(0, 7), dir: 'v' },     // (0,7)-(0,11)
+  { type: 'battleship', anchor: at(1, 8), dir: 'v' },  // (1,8)-(1,11)
+  { type: 'cruiser', anchor: at(2, 9), dir: 'v' },     // (2,9)-(2,11)
+  { type: 'submarine', anchor: at(3, 9), dir: 'v' },   // (3,9)-(3,11)
+  { type: 'destroyer', anchor: at(4, 10), dir: 'v' },  // (4,10)-(4,11)
+];
+
+/** Cal's fleet: top-right rows, destroyer shifted right of the atoll ring. */
+const calFleet = () => [
+  { type: 'carrier', anchor: at(7, 0), dir: 'h' },     // (7,0)-(11,0)
+  { type: 'battleship', anchor: at(7, 1), dir: 'h' },
+  { type: 'cruiser', anchor: at(7, 2), dir: 'h' },
+  { type: 'submarine', anchor: at(7, 3), dir: 'h' },
+  { type: 'destroyer', anchor: at(8, 4), dir: 'h' },   // (8,4)-(9,4)
+];
+
+/**
+ * 3 players (12x12 board) on the atoll map with known, non-overlapping fleets.
+ * atoll@12 land is the ring (4..7)x(4..7) minus its hollow middle.
+ */
 function threePlayerGame() {
   const h = harness();
   const { room } = h;
@@ -65,11 +92,12 @@ function threePlayerGame() {
   const c = room.join({ name: 'Cal' }).player;
 
   room.startGame(a.id);
+  assert.equal(room.grid, G, '3 players play on a 12x12 board');
   room.terrainId = 'atoll'; // pin the map so the fixtures below are always legal
 
-  room.setPlacement(a.id, rowFleet(0, 0));   // Ann occupies A1..E1 etc, top-left
-  room.setPlacement(b.id, rowFleet(0, 10));  // Ben is down at the bottom
-  room.setPlacement(c.id, rowFleet(10, 0));  // Cal is top-right
+  room.setPlacement(a.id, rowFleet(0, 0)); // Ann occupies the top-left rows
+  room.setPlacement(b.id, benFleet());
+  room.setPlacement(c.id, calFleet());
 
   [a, b, c].forEach((p) => room.confirmPlacement(p.id));
   assert.equal(room.phase, PHASE.PLAYING);
@@ -78,23 +106,23 @@ function threePlayerGame() {
 
 test('THE CORE MECHANIC: one cell resolves independently per defender', () => {
   const { room, a, b, c } = threePlayerGame();
-  const CELL = toIndex(0, 0); // "A1"
+  const CELL = at(0, 0); // "A1"
 
-  // A1 is water on Ben's board (his fleet is at the bottom) but is Ann's carrier.
+  // A1 is water on Ben's board (his fleet is vertical, rows 7+) but is Ann's carrier.
   assert.equal(room.currentPlayerId(), a.id);
   room.fire(a.id, { targetId: b.id, cell: CELL });
-  assert.equal(b.incoming[CELL], SHOT.MISS, `${label(CELL)} should miss Ben`);
+  assert.equal(b.incoming[CELL], SHOT.MISS, `${label(CELL, G)} should miss Ben`);
 
   // Same coordinate, different defender, opposite outcome — and Ben's grid is untouched.
   assert.equal(room.currentPlayerId(), b.id);
   room.fire(b.id, { targetId: a.id, cell: CELL });
-  assert.equal(a.incoming[CELL], SHOT.HIT, `${label(CELL)} should hit Ann`);
+  assert.equal(a.incoming[CELL], SHOT.HIT, `${label(CELL, G)} should hit Ann`);
   assert.equal(b.incoming[CELL], SHOT.MISS, "Ben's grid must not change when Ann is shot");
-  assert.equal(c.incoming[CELL], SHOT.NONE, "Cal was never fired at");
+  assert.equal(c.incoming[CELL], SHOT.NONE, 'Cal was never fired at');
 
-  // Cal fires the same coordinate at a third player — still independent, still allowed.
+  // Cal fires the same column at a third player — still independent, still allowed.
   assert.equal(room.currentPlayerId(), c.id);
-  room.fire(c.id, { targetId: b.id, cell: toIndex(0, 10) });
+  room.fire(c.id, { targetId: b.id, cell: at(0, 10) });
 
   // Back to Ann: firing A1 at Ben again is a repeat and must be refused...
   assert.equal(room.currentPlayerId(), a.id);
@@ -107,29 +135,29 @@ test('THE CORE MECHANIC: one cell resolves independently per defender', () => {
 
 test('no global shot grid leaks between defenders', () => {
   const { room, a, b, c } = threePlayerGame();
-  // Ann shoots every cell of row 5 at Ben; Cal's and Ann's grids stay pristine.
+  // Ann shoots every cell of row 3 at Ben; Cal's and Ann's grids stay pristine.
   for (let x = 0; x < 5; x++) {
-    const cell = toIndex(x, 5);
+    const cell = at(x, 2);
     b.incoming[cell] = SHOT.NONE;
     room.turn.pos = room.seating.indexOf(a.id);
     room.fire(a.id, { targetId: b.id, cell });
   }
   for (let x = 0; x < 5; x++) {
-    assert.equal(c.incoming[toIndex(x, 5)], SHOT.NONE);
-    assert.equal(a.incoming[toIndex(x, 5)], SHOT.NONE);
+    assert.equal(c.incoming[at(x, 2)], SHOT.NONE);
+    assert.equal(a.incoming[at(x, 2)], SHOT.NONE);
   }
 });
 
 test('sinking a ship reports it, and a wiped fleet eliminates the player', () => {
   const { room, events, a, b } = threePlayerGame();
 
-  // Ben's destroyer sits at (0,14)-(1,14).
+  // Ben's destroyer sits at (4,10)-(4,11).
   room.turn.pos = room.seating.indexOf(a.id);
-  room.fire(a.id, { targetId: b.id, cell: toIndex(0, 14) });
+  room.fire(a.id, { targetId: b.id, cell: at(4, 10) });
   assert.equal(events.at(-2).result, 'hit');
 
   room.turn.pos = room.seating.indexOf(a.id);
-  room.fire(a.id, { targetId: b.id, cell: toIndex(1, 14) });
+  room.fire(a.id, { targetId: b.id, cell: at(4, 11) });
   const sunk = events.find((e) => e.t === MSG.FIRE_RESULT && e.result === 'sunk');
   assert.equal(sunk.shipType, 'destroyer');
 
@@ -147,7 +175,7 @@ test('sinking a ship reports it, and a wiped fleet eliminates the player', () =>
   assert.ok(events.some((e) => e.t === MSG.ELIMINATED && e.playerId === b.id));
   throwsCode(() => {
     room.turn.pos = room.seating.indexOf(a.id);
-    room.fire(a.id, { targetId: b.id, cell: toIndex(3, 3) });
+    room.fire(a.id, { targetId: b.id, cell: at(3, 3) });
   }, 'bad_target');
 });
 
@@ -220,10 +248,11 @@ test('placement timeout keeps what you placed and fills in the rest', () => {
   const a = room.join({ name: 'Ann' }).player;
   const b = room.join({ name: 'Ben' }).player;
   room.startGame(a.id);
+  assert.equal(room.grid, 10, '2 players play on a 10x10 board');
   room.terrainId = 'atoll';
   room.randomPlacement(b.id); // re-roll on the pinned map so his fleet is legal there
 
-  room.setPlacement(a.id, rowFleet(0, 0));
+  room.setPlacement(a.id, rowFleet(0, 0, 10));
   room.confirmPlacement(a.id);
   assert.equal(room.phase, PHASE.PLACEMENT, 'still waiting on Ben');
 
@@ -273,7 +302,7 @@ test('redaction hides afloat enemy ships but reveals sunk ones', () => {
 
 test('land cannot be targeted', () => {
   const { room, a, b } = threePlayerGame();
-  const landCell = toIndex(7, 7 - 1); // (7,6) is land on the atoll ring
+  const landCell = at(4, 4); // corner of the atoll ring on the 12x12 map
   room.turn.pos = room.seating.indexOf(a.id);
   throwsCode(() => room.fire(a.id, { targetId: b.id, cell: landCell }), 'cell_is_land');
 });
@@ -311,7 +340,7 @@ test('reconnecting with a token reclaims the same slot and fleet', () => {
 
 test('a repeated nonce does not fire twice', () => {
   const { room, events, a, b } = threePlayerGame();
-  const cell = toIndex(4, 6);
+  const cell = at(1, 6); // open water on Ben's board
 
   room.turn.pos = room.seating.indexOf(a.id);
   room.fire(a.id, { targetId: b.id, cell, nonce: 'n1' });
@@ -325,5 +354,197 @@ test('a repeated nonce does not fire twice', () => {
 test('you cannot fire out of turn', () => {
   const { room, a, b, c } = threePlayerGame();
   assert.equal(room.currentPlayerId(), a.id);
-  throwsCode(() => room.fire(c.id, { targetId: b.id, cell: toIndex(3, 6) }), 'not_your_turn');
+  throwsCode(() => room.fire(c.id, { targetId: b.id, cell: at(3, 6) }), 'not_your_turn');
+});
+
+// ---------------------------------------------------------------------- premoves
+
+test('premoves fire one per turn, and DEALING damage does not stop the queue', () => {
+  const { room, clock, events, a, b, c } = threePlayerGame();
+
+  room.setPremoves(b.id, [
+    { targetId: c.id, cell: at(0, 11) },  // open water on Cal's board -> miss
+    { targetId: a.id, cell: at(2, 0) },   // Ann's carrier -> hit
+    { targetId: c.id, cell: at(1, 11) },  // must SURVIVE the hit above
+  ]);
+  assert.equal(b.premoves.length, 3);
+
+  // Ann plays by hand; then Ben's queue takes over after the reveal delay.
+  room.fire(a.id, { targetId: c.id, cell: at(2, 11) });
+  assert.equal(room.currentPlayerId(), b.id);
+
+  const before = events.filter((e) => e.t === MSG.FIRE_RESULT).length;
+  clock.advance(PREMOVE_DELAY_MS);
+
+  let shots = events.filter((e) => e.t === MSG.FIRE_RESULT);
+  assert.equal(shots.length, before + 1, 'the queued shot fired on its own');
+  assert.equal(shots.at(-1).attackerId, b.id);
+  assert.equal(shots.at(-1).premove, true);
+  assert.equal(shots.at(-1).result, 'miss');
+  assert.equal(c.incoming[at(0, 11)], SHOT.MISS);
+  assert.equal(b.premoves.length, 2, 'a miss keeps the rest of the queue');
+  assert.equal(room.currentPlayerId(), c.id, 'the turn moved on');
+
+  // A full round later Ben's next queued shot CONNECTS — and the queue keeps going,
+  // because hurting someone else is no reason to stop shelling them.
+  room.fire(c.id, { targetId: a.id, cell: at(0, 11) });
+  room.fire(a.id, { targetId: c.id, cell: at(3, 11) });
+  assert.equal(room.currentPlayerId(), b.id);
+  clock.advance(PREMOVE_DELAY_MS);
+
+  shots = events.filter((e) => e.t === MSG.FIRE_RESULT);
+  assert.equal(shots.at(-1).result, 'hit');
+  assert.equal(a.incoming[at(2, 0)], SHOT.HIT);
+  assert.equal(b.premoves.length, 1, 'landing a hit must NOT clear your own queue');
+});
+
+test('TAKING damage scraps the defender\'s queue, not the attacker\'s', () => {
+  const { room, a, b, c } = threePlayerGame();
+
+  room.setPremoves(b.id, [{ targetId: c.id, cell: at(5, 11) }]);
+  room.setPremoves(c.id, [{ targetId: a.id, cell: at(6, 11) }]);
+  assert.equal(b.premoves.length, 1);
+  assert.equal(c.premoves.length, 1);
+
+  // Ann hits Ben's carrier, which sits vertically at (0,7)-(0,11).
+  room.fire(a.id, { targetId: b.id, cell: at(0, 7) });
+  assert.equal(b.incoming[at(0, 7)], SHOT.HIT);
+
+  assert.equal(b.premoves.length, 0, 'the player who got hit loses their plan');
+  assert.equal(c.premoves.length, 1, 'a bystander keeps theirs');
+});
+
+test('a queued cell someone else has since shot is skipped for the next one', () => {
+  const { room, clock, events, b, c, a } = threePlayerGame();
+  const cellX = at(5, 11);
+  const cellY = at(6, 11);
+  room.setPremoves(b.id, [
+    { targetId: c.id, cell: cellX },
+    { targetId: c.id, cell: cellY },
+  ]);
+
+  // Ann takes cellX on Cal's board first.
+  room.fire(a.id, { targetId: c.id, cell: cellX });
+  assert.equal(room.currentPlayerId(), b.id);
+  clock.advance(PREMOVE_DELAY_MS);
+
+  const shot = events.filter((e) => e.t === MSG.FIRE_RESULT).at(-1);
+  assert.equal(shot.attackerId, b.id);
+  assert.equal(shot.cell, cellY, 'the stale entry was skipped');
+  assert.equal(b.premoves.length, 0);
+});
+
+test('firing by hand cancels the pending queued shot but keeps the queue', () => {
+  const { room, clock, events, a, b, c } = threePlayerGame();
+  const queued = at(7, 11);
+  room.setPremoves(b.id, [{ targetId: c.id, cell: queued }]);
+
+  room.fire(a.id, { targetId: c.id, cell: at(2, 11) });
+  assert.equal(room.currentPlayerId(), b.id);
+
+  // Ben aims himself before the queue pops.
+  room.fire(b.id, { targetId: c.id, cell: at(8, 11) });
+  const count = events.filter((e) => e.t === MSG.FIRE_RESULT).length;
+
+  clock.advance(PREMOVE_DELAY_MS * 2);
+  assert.equal(events.filter((e) => e.t === MSG.FIRE_RESULT).length, count, 'no ghost shot');
+  assert.equal(c.incoming[queued], SHOT.NONE);
+  assert.equal(b.premoves.length, 1, 'the queue holds for his next turn');
+});
+
+test('setPremoves sanitizes garbage and caps the queue', () => {
+  const { room, a, b, c } = threePlayerGame();
+  room.setPremoves(a.id, [
+    { targetId: a.id, cell: at(0, 11) },    // yourself — dropped
+    { targetId: 'zz', cell: at(1, 11) },    // unknown player — dropped
+    { targetId: b.id, cell: at(4, 4) },     // land — dropped
+    { targetId: b.id, cell: -1 },           // off the board — dropped
+    { targetId: b.id, cell: G * G },        // off the board — dropped
+    { targetId: b.id, cell: at(2, 11) },
+    { targetId: b.id, cell: at(2, 11) },    // duplicate — dropped
+    ...Array.from({ length: 10 }, (_, x) => ({ targetId: c.id, cell: at(x, 11) })),
+  ]);
+
+  assert.equal(a.premoves.length, MAX_PREMOVES, 'queue is capped');
+  assert.ok(a.premoves.every((m) => m.targetId !== a.id));
+  assert.ok(!a.premoves.some((m) => m.cell === at(4, 4)));
+  assert.equal(a.premoves.filter((m) => m.cell === at(2, 11) && m.targetId === b.id).length, 1);
+
+  const empty = harness();
+  const p = empty.room.join({ name: 'Solo' }).player;
+  throwsCode(() => empty.room.setPremoves(p.id, [{ targetId: 'x', cell: 0 }]), 'wrong_phase');
+});
+
+test('your queue is private: never projected to other players', () => {
+  const { room, a, b } = threePlayerGame();
+  room.setPremoves(a.id, [{ targetId: b.id, cell: at(9, 11) }]);
+
+  const asAnn = projectState(room, a.id);
+  assert.equal(asAnn.players.find((p) => p.id === a.id).premoves.length, 1);
+  assert.equal(asAnn.grid, G, 'state carries the board size');
+
+  const asBen = projectState(room, b.id);
+  assert.equal(asBen.players.find((p) => p.id === a.id).premoves, undefined,
+    "Ann's battle plan must never reach Ben's phone");
+});
+
+test('the hurricane crosses once, pauses the next turn, and stays out of the combat log', () => {
+  const { room, clock, events, a, c } = threePlayerGame();
+
+  // Rounds 4–6 are the warning. Landfall happens on the next wrap, when the turn would
+  // otherwise move from Cal back to Ann.
+  for (let i = 0; i < 6; i++) room.endOfRound();
+  room.turn.pos = room.seating.indexOf(c.id);
+
+  const turnEventsBefore = events.filter((e) => e.t === MSG.TURN).length;
+  const logBefore = room.log.length;
+  room.advanceTurn();
+
+  assert.equal(room.stormActive, true, 'landfall starts one active crossing');
+  assert.equal(room.currentPlayerId(), a.id, 'the next seat is selected before the pause');
+  assert.equal(room.turn.deadlineAt, null, 'the next turn has no timer during the crossing');
+  assert.equal(events.filter((e) => e.t === MSG.TURN).length, turnEventsBefore,
+    'landfall does not emit a premature back-to-back turn');
+  assert.equal(room.log.length, logBefore, 'landfall does not add a combat-log entry');
+
+  // The fake clock runs all scheduled sweep steps. The server should announce exactly one
+  // post-storm turn after the crossing, then later round wraps must not restart it.
+  clock.advance(30_000);
+  const activeEvents = events.filter((e) => e.t === MSG.HURRICANE && e.phase === 'active');
+  assert.equal(room.stormActive, false, 'the crossing finishes');
+  assert.equal(room.stormPhase.phase, 'passed');
+  assert.equal(activeEvents.length, room.stormTrack.length, 'each track step runs once');
+  assert.equal(room.log.length, logBefore, 'storm steps stay out of the combat log');
+  assert.equal(events.filter((e) => e.t === MSG.TURN).length, turnEventsBefore + 1,
+    'one turn resumes after the storm');
+
+  room.endOfRound();
+  const activeBeforeLateRound = activeEvents.length;
+  clock.advance(30_000);
+  assert.equal(events.filter((e) => e.t === MSG.HURRICANE && e.phase === 'active').length,
+    activeBeforeLateRound, 'a later round cannot start a second crossing');
+  assert.equal(room.log.length, logBefore, 'later storm state never changes the combat log');
+});
+
+test('board size scales with the player count', () => {
+  // Two players: close-quarters 10x10.
+  const two = harness();
+  const a2 = two.room.join({ name: 'Ann' }).player;
+  two.room.join({ name: 'Ben' });
+  two.room.startGame(a2.id);
+  assert.equal(two.room.grid, 10);
+  assert.equal(a2.incoming.length, 100);
+  assert.equal(a2.shipAt.length, 100);
+  assert.equal(projectState(two.room, a2.id).grid, 10);
+
+  // Four players: the full 15x15 ocean.
+  const four = harness();
+  const a4 = four.room.join({ name: 'Ann' }).player;
+  four.room.join({ name: 'Ben' });
+  four.room.join({ name: 'Cal' });
+  const d4 = four.room.join({ name: 'Dot' }).player;
+  four.room.startGame(a4.id);
+  assert.equal(four.room.grid, 15);
+  assert.equal(d4.incoming.length, 225);
+  assert.ok(a4.ships.every((s) => s.cells.every((c) => c < 225)));
 });

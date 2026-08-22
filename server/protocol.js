@@ -51,6 +51,24 @@ export function dispatch(room, playerId, msg) {
         nonce: typeof msg.nonce === 'string' ? msg.nonce : null,
       });
 
+    case MSG.PREMOVE_SET:
+      return room.setPremoves(playerId, msg.premoves);
+
+    case MSG.ITEM_USE:
+      return room.useItem(playerId, {
+        item: msg.item, targetId: msg.targetId ?? null, cell: msg.cell ?? null,
+      });
+
+    case MSG.COUNTRY_SET:
+      return room.setCountry(playerId, msg.country);
+
+    case MSG.POWER_FIRE:
+      return room.firePower(playerId, {
+        targetId: msg.targetId,
+        anchor: msg.anchor,
+        picked: msg.picked ?? null,
+      });
+
     default:
       throw new GameError(ERR.BAD_MESSAGE, `Unknown message: ${msg.t}`);
   }
